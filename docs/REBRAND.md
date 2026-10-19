@@ -346,6 +346,10 @@ $ErrorActionPreference = 'Stop'
 $dotnet = 'G:\TOOL\dotnet-sdk\dotnet.exe'
 Set-Location 'G:\TOOL\LiteMonitor-fork'
 
+# 启动 dev 版（构建 + 平铺驱动/FPS 资源 + 启动）
+& pwsh -File scripts/run-dev.ps1
+& pwsh -File scripts/run-dev.ps1 -NoLaunch        # 只构建不启动
+
 # 构建
 & $dotnet build 'LiteMonitor.csproj' -c Release -v quiet
 
@@ -363,3 +367,13 @@ Copy-Item 'LiteMonitor.Updater\bin\Release\net8.0-windows\win-x64\publish\LiteMo
 
 > ⚠️ **禁止 `git add -A`** —— 会把其他会话的未跟踪文件一并提交。
 > 提交前用 `git status --short` 核对暂存范围。
+
+### 9.1 dev 版与发布版的差异
+
+| 项 | 发布包 | dev 版（`scripts/run-dev.ps1`） |
+|---|---|---|
+| 驱动包 `resources/driver.zip` | 打包时平铺，**离线可装** | 脚本同样会平铺，**离线可装** |
+| FPS 组件 `resources/LiteMonitorPlusFPS.exe` | 打包时平铺 | 脚本同样会平铺 |
+| 单实例互斥体 | 按 exe 所在目录生成 | 同上，**与发布版目录不同 → 可并存** |
+| `settings.json` / 崩溃日志 | 发布包目录 | `bin\Debug\net8.0-windows\`，与发布版隔离 |
+| 提权 | `app.manifest` 要求管理员，启动必弹 UAC | 同上 |
