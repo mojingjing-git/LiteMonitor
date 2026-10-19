@@ -25,6 +25,49 @@
 
 ---
 
+## Task 0 决策记录（已定案，2026-10-20）
+
+| 占位符 | 取值 | 说明 |
+|---|---|---|
+| `{{BRAND}}` | `LiteMonitor++` | 品牌显示名 / exe 名 / 程序集名 / 计划任务名 / 崩溃日志名 / User-Agent |
+| `{{OWNER}}` | `mojingjing-git` | 本项目作者署名（LICENSE 与 NOTICE 的第二份版权） |
+| `{{REPO}}` | `mojingjing-git/LiteMonitorPlus` | GitHub 仓库 |
+| `{{REPO_OWNER}}` | `mojingjing-git` | |
+| `{{REPO_NAME}}` | `LiteMonitorPlus` | |
+| `{{SITE}}` | *(无)* | 没有官网，相关"官网"行改为"上游项目"致谢链接 |
+| `{{VERSION}}` | `1.0.0` | 独立号段，与上游 1.3.6 区分 |
+
+### 命名规则的硬约束：GitHub 仓库名不允许 `+`
+
+**实测证据**（2026-10-20）：
+- GitHub API `search/repositories?q=%2B+in:name` → `total_count: 0`
+- GitHub API `search/repositories?q=%2B%2B+in:name` → `total_count: 0`
+- 全站不存在任何名字含 `+` 的仓库
+
+因此形成**双形态命名**：
+
+| 用途 | 名称 | 能否含 `+` |
+|---|---|---|
+| 品牌显示 / exe / 程序集 / 计划任务 / 日志 / UA | `LiteMonitor++` | ✅ Windows 文件名与 .NET 程序集名均允许（已实测 `<AssemblyName>LiteMonitor++</AssemblyName>` 编译通过） |
+| GitHub 仓库 / 发布包 / 资源下载 URL | `LiteMonitorPlus` | ❌ URL 与仓库名不允许 `+` |
+
+**代码中不出现 `+` 标识符**：`namespace` 保持 `LiteMonitor` 不变（Task 7 默认不执行），故不存在 C# 标识符非法问题；且代码中**没有** `Type.GetType()` / `Assembly.Load()` 等跨程序集限定解析（已全仓核实），`+` 不会破坏运行时类型解析。
+
+### 命名冲突核查结论
+
+| 检索对象 | 结果 | 处置 |
+|---|---|---|
+| `Diorser/LiteMonitor`（上游） | 6683 star / 316 fork，活跃维护 | 保留并致谢 |
+| `YuChen-OmO/LiteMonitor-Fork` | **已存在**，C#，"修复了集成显卡不能显示温度" | 直接先例：给 fork 加后缀命名是本项目既有社区实践 |
+| 其它 `LiteMonitor` 同名仓库 | Python / Java / PHP 的 litemonitor 库、C++ 版等 | 与本项目品类不同，无冲突 |
+| `Monitor`（Windows 版，pzkl.cn） | 功能与 LiteMonitor 高度重合的中文系统监控工具 | **因品牌带 `Lite` 前缀而避开**，不构成撞名 |
+| `Monitor++`（Android App，Jet Sun Tech） | 相机监视器，同名不同类 | 同上，已避开 |
+| `Notepad++` / `DebugView++` / `Win-M++` | `++` 后缀是开源生态"派生/增强版"的成熟约定 | 支持本命名方案 |
+
+**结论**：`LiteMonitor++` 血缘自明、保留上游拼写、MIT 致谢义务天然满足，且与既有 fork 命名实践一致。
+
+---
+
 ## 仓库与工具链现状（已核实）
 
 - Fork: `https://github.com/mojingjing-git/LiteMonitor`（上游 `Diorser/LiteMonitor`）
