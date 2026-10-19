@@ -285,7 +285,61 @@ pwsh -File scripts/make-icon.ps1
 
 ---
 
-## 8. 常用命令速查
+## 8. 去 emoji 规范（软件内禁用 emoji）
+
+软件内**所有用户可见内容**禁用 emoji（彩色图标），改为纯文字或纯文本符号。
+
+### 8.1 适用范围
+
+| 范围 | 处理 |
+|---|---|
+| `src/**/*.cs` 的**字符串字面量** | 必须去 emoji |
+| `resources/lang/*.json`（9 个） | 必须去 emoji |
+| `resources/plugins/*.json`（12 个） | 必须去 emoji |
+| `resources/plugins/PLUGIN_DEV_GUIDE.md`、`README.md`、`README.en.md` | 必须去 emoji |
+| **源码注释** | 不动（开发者可见，不是软件内内容） |
+| `docs/**`、`src/UI/Settings/SETTINGS_README_DEV.md` | 不动（内部文档） |
+
+### 8.2 保留的符号（这些**不是** emoji，删了会丢语义）
+
+| 符号 | 码位 | 用途 |
+|---|---|---|
+| `↑` `↓` | U+2191 / U+2193 | 上行/下行方向语义。语言包 `Short.NET.Up` `Short.NET.Down` 用它取代原先的彩色三角 |
+| `↑↑` `↓↓` | U+2191 ×2 | 每日流量累计，取代原先的彩色双三角（单三角=即时速率，双三角=日累计） |
+| `→` | U+2192 | 文档与插件标题里的方向指示 |
+| `▲` `▼` | U+25B2 / U+25BC | 任务栏监控项的排序按钮 |
+| `★` | U+2605 | 中文注释里的章节标记（**源码注释里 2262 处，全仓保留**） |
+| `©` | U+00A9 | 版权声明（MIT 义务，不可删） |
+
+### 8.3 承载语义、不能删成空串的几处
+
+| 位置 | 原值 | 现值 |
+|---|---|---|
+| `PluginConstants.STATUS_ERROR` | 彩色叉号 | `[ERROR]` |
+| `PluginConstants.STATUS_UNKNOWN` | 彩色问号 | `[UNKNOWN]` |
+| `PluginConstants.STATUS_EMPTY` | 禁止通行号 | `[EMPTY]` |
+| `MetricUtils` 充电单位后缀 | 闪电号 | `+` |
+| `TaskbarPage` 取色按钮 | 画笔图标 | `LanguageManager.T("Menu.ScreenColorPickerShort")`（9 个语言包各给一个单字） |
+| `Weather.json` 天气映射 | 天气图标 | 天气文字本身（如 `晴`） |
+| `Weather.json` 三个 `emoji_*` 显示模式 | 图标 | 文字模式。**`value` 键 `emoji_temp` / `emoji_only` / `emoji_range` 不得改名**，否则用户已保存的设置会失效 |
+| `WeiboHot.json` 榜单标记 | 图标 | 文字 + 一个尾空格（`爆 ` / `热 ` / `新 ` / `荐 ` / `沸 `） |
+
+### 8.4 审计命令
+
+```powershell
+# 软件内不应再有 emoji（src/ 需排除注释，可用脚本的字符串感知扫描）
+# 仓库内仍有 emoji 的文件（应只剩 docs/ 与源码注释）
+Get-ChildItem -Recurse -Include *.cs,*.json,*.md,*.txt |
+  Where-Object { $_.FullName -notmatch '\\(bin|obj|dist|\.git)\\' } |
+  ForEach-Object {
+    $t = Get-Content $_.FullName -Raw
+    if ($t -match '[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF]') { $_.FullName }
+  }
+```
+
+---
+
+## 9. 常用命令速查
 
 ```powershell
 $ErrorActionPreference = 'Stop'
