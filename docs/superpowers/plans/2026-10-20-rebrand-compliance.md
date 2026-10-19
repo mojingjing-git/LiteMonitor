@@ -1137,7 +1137,10 @@ git commit -m "docs(rebrand): 修正文档中的品牌、失实描述与过强�
 - Consumes: Task 0.1 的 `{{VERSION}}`
 - Produces: 版本号与上游不冲突、构建产物不入库、图标为自有品牌、**发布包可复现**
 
-- [ ] **Step 6.1: 校验 `.gitignore`**
+- [x] **Step 6.1: 校验 `.gitignore`**
+
+> **实测结果**：`.gitignore` 已存在（多显卡 Task 1 创建），`bin/` 与 `obj/` 两条规则均命中。
+> 补充了 `.review-scratch/`（评审临时产物）与 `dist/`（发布包输出目录）。
 
 多显卡计划 Task 1 已创建 `.gitignore`。**本 Task 只校验，不重建**：
 
@@ -1169,23 +1172,35 @@ TrafficHistory.json.bak
 .review-scratch/
 ```
 
-- [ ] **Step 6.2: 清理陈旧第三方 DLL**
+- [x] **Step 6.2: 清理陈旧第三方 DLL**
 
-`bin/Release/net8.0-windows/` 下有 5 个**当前源码完全不引用**的第三方 DLL（来自 2026-01 的旧构建）：
+> ⚠️ **本步原结论已被证伪，执行时已更正（2026-10-20）**。
+> 原计划判断 `bin/Release/net8.0-windows/` 下的 `BlackSharp.Core.dll` / `DiskInfoToolkit.dll` /
+> `HidSharp.dll` / `RAMSPDToolkit-NDD.dll` / `System.IO.Ports.dll` 是「源码零引用的陈旧残留」。
+> **实际核查 `LiteMonitor++.deps.json` 的依赖图后确认：它们是 LibreHardwareMonitorLib 0.9.6 的
+> 真实传递依赖** —— LHM 依赖 `DiskInfoToolkit` / `HidSharp` / `Mono.Posix.NETStandard` /
+> `RAMSPDToolkit-NDD` / `System.IO.Ports` / `System.Management` / `System.Threading.AccessControl`，
+> 而 `DiskInfoToolkit` 与 `RAMSPDToolkit-NDD` 又依赖 `BlackSharp.Core`。
+> 源码里搜不到这些名字只是因为它们是被反射/延迟加载的传感器后端（磁盘信息、SPD 内存传感器等）。
+> **结论：这些 DLL 必须随包分发，不可删除、也不可移出发布包。**
 
+原计划中唯一仍然成立、且必须执行的部分：
+
+```powershell
+Set-Location 'G:\TOOL\LiteMonitor-fork'
+# bin/ 与 obj/ 已被 .gitignore 忽略，删除不影响 git 历史
 ```
-BlackSharp.Core.dll      32 KB
-DiskInfoToolkit.dll     883 KB
-HidSharp.dll            234 KB
-RAMSPDToolkit-NDD.dll   232 KB
-System.IO.Ports.dll      35 KB
-```
 
-**已核实**：全仓库 grep `DiskInfoToolkit|RAMSPDToolkit|HidSharp|BlackSharp` **零命中**。
+`bin/` 下确实混有**上游 2026-01 的旧发布产物**（`bin/Release/net8.0-windows/win-x64/` 整目录，
+里面还是 `LiteMonitor.exe` 旧名与旧 `LiteMonitor.Updater.exe`），必须清掉，
+否则 `dotnet publish` 的输出目录会被误认为可用产物。删除后重新构建即可。
 
-处理方式：**删除 `bin/` 与 `obj/` 整个目录**（已被 `.gitignore` 忽略，不影响 git 历史），重新构建即可。**不要**把这些 DLL 复制进 `resources/` —— 它们是本地旧构建的残留，不属于本项目。
 
-- [ ] **Step 6.3: 版本号策略**
+- [x] **Step 6.3: 版本号策略**
+
+> **实测结果**：版本号在 Task 4 改程序集名时已顺手改为 `1.0.0` / `1.0.0.0`，
+> `resources/version.json` 的 `version` 同为 `1.0.0`，`changelog` 与 `releaseDate`
+> 已改写为本项目首个自有版本的说明。三处一致，无需再改。
 
 当前 `LiteMonitor.csproj:15,17` 是 `1.3.6` / `1.3.6.0`，`resources/version.json:2` 是 `"1.3.6"` —— **与上游完全同号**。
 
@@ -1206,96 +1221,78 @@ System.IO.Ports.dll      35 KB
 
 > `resources/version.json` 的 `changelog` / `releaseDate` 也要改成你自己的首个版本说明（当前是上游 1.3.6 的日志，会误导用户）。
 
-- [ ] **Step 6.4: 确认发布包命名与 Task 2.2 一致**
+- [x] **Step 6.4: 确认发布包命名与 Task 2.2 一致**
+
+> **实测结果**：发布包名 `LiteMonitorPlus_v{Version}-win-x64.zip`，
+> 与 `UpdateChecker.cs` 的下载模板 `LiteMonitorPlus_v{0}-win-x64.zip` 一致。
+> `scripts/pack-release.ps1` 启动时会自检该一致性，不一致直接中止打包。
 
 Task 2.2 的下载 URL 模板是 `{{BRAND}}_v{0}-win-x64.zip`。**发布包的实际文件名必须严格匹配**，否则更新会下载到一个不存在的文件。
 
-- [ ] **Step 6.5: 写发布打包脚本（当前完全靠手工）**
+- [x] **Step 6.5: 写发布打包脚本（当前完全靠手工）**
 
-**已核实的现状**：`resources/assets/` **不会**被 csproj 复制到输出目录。csproj 的 `Content` 只有 5 项（`themes/` `lang/` `plugins/` `resources\LiteMonitor.Updater.exe` `使用说明`）。`bin/Release/net8.0-windows/resources/` 实测只有 `lang/` `plugins/` `themes/` `LiteMonitor.Updater.exe`。
+**已核实的现状**：`resources/assets/` **不会**被 csproj 复制到输出目录。csproj 的 `Content` 有 6 项（`themes/` `lang/` `plugins/` `resources\assets\CityCode.json` `resources\LiteMonitor++.Updater.exe` `使用说明`）。
 
-**这意味着**：`driver.zip`、`PawnIO_setup.exe`、`LiteMonitorFPS.exe`、`app.ico` 和 7 个 PNG **不在构建产物里**。上游的发布 ZIP 是**手工把 `assets/` 平铺进 `resources/`** 拼出来的（`DriverInstaller` 在运行时从 `resources/` 找 `driver.zip` 和 FPS 组件）。
+**这意味着**：`driver.zip`、`PawnIO_setup.exe`、`LiteMonitorPlusFPS.exe`、`app.ico` 和 7 个 PNG **不在构建产物里**。上游的发布 ZIP 是**手工把 `assets/` 平铺进 `resources/`** 拼出来的。
 
-**这个手工步骤必须固化成脚本**，否则：
-- 每次发布都可能漏文件
-- Task 2.7 的"城市库本地化"方案无法生效
-- Task 2.6 的 SHA256 校验需要引用具体文件
+**实际实现**：`scripts/pack-release.ps1`（已落地，与本计划原先的草稿有出入，以脚本为准）。要点：
 
-新建 `scripts/pack-release.ps1`：
+1. **自检一致性**：启动时校验 `UpdateChecker.cs` 的下载模板、`LiteMonitor.csproj` 的 `<Version>`、`resources/version.json` 的 `version` 三者与 `-Version` 参数一致，不一致直接中止 —— 包名对不上会导致「检查更新」下载到不存在的文件。
+2. **先发 Updater**：发布 `LiteMonitor.Updater`（单文件 / 框架依赖）并刷新仓库内 `resources\LiteMonitor++.Updater.exe`，再发布主程序 —— 因为主程序的 `Content` 引用的是仓库里那份 Updater，顺序反了会把旧版打进包。
+3. **`dotnet publish` 而非 `build`**：主程序 csproj 没有 `PublishSingleFile`，`dotnet publish -r win-x64 --self-contained false` 产出的是框架依赖多文件形态（与上游发布包一致，2.8 MB 级）。
+4. **补 `CopyToPublishDirectory`**：`resources\LiteMonitor++.Updater.exe` 与 `使用说明(必读).txt` 原先只配了 `CopyToOutputDirectory`，**`publish` 时不会被复制**，已补上。
+5. **只平铺运行时需要的资源**：`driver.zip` / `LiteMonitorPlusFPS.exe` / `CityCode.json` → `resources/`。`app.ico` 与 7 个 PNG 是**编译期嵌入资源**（`Properties.Resources.*`，resx 以 `ResXFileRef` 引用 `resources/assets/`），运行时不需要从磁盘读，**不打进发布包**。
+6. **删除 `resources/assets/`**：csproj 会把 `CityCode.json` 复制到 `resources/assets/`，与平铺副本重复，删掉以免包内冗余。
+7. **打上 LICENSE / NOTICE**：MIT 分发义务，每个分发副本都必须带许可声明。
+8. 产物：`dist/LiteMonitorPlus_v{Version}-win-x64.zip`，脚本末尾输出包 SHA256。
 
-```powershell
-#requires -Version 7.0
-<#
-  发布包拼装脚本
-  用法: pwsh -File scripts/pack-release.ps1 -Version 1.0.0
-  产物: dist/{{BRAND}}_v1.0.0-win-x64.zip
-#>
-param(
-    [Parameter(Mandatory = $true)][string]$Version,
-    [string]$Brand = '{{BRAND}}',
-    [string]$OutDir = 'dist'
-)
-
-$ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
-$src  = Join-Path $root "bin\Release\net8.0-windows"
-$stage = Join-Path $root "dist\stage"
-$zip  = Join-Path $root "$OutDir\${Brand}_v${Version}-win-x64.zip"
-
-if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-New-Item -ItemType Directory -Force -Path $stage | Out-Null
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $zip) | Out-Null
-
-# 1. 主程序与运行期依赖（构建产物）
-Copy-Item (Join-Path $src '*') $stage -Recurse -Force
-
-# 2. resources/assets/* 平铺进 resources/（关键：driver.zip / FPS 组件 / 图标）
-$assets = Join-Path $root 'resources\assets'
-Get-ChildItem $assets -File | ForEach-Object {
-    Copy-Item $_.FullName (Join-Path $stage 'resources') -Force
-}
-
-# 3. 许可证与致谢（MIT 强制：分发包必须带）
-Copy-Item (Join-Path $root 'LICENSE') $stage -Force
-Copy-Item (Join-Path $root 'NOTICE')  $stage -Force
-
-# 4. 打包
-if (Test-Path $zip) { Remove-Item -Force $zip }
-Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
-Remove-Item -Recurse -Force $stage
-
-Write-Host "OK -> $zip"
-```
+**实测产物**：`LiteMonitorPlus_v1.0.0-win-x64.zip`，6.18 MB，58 个条目。
 
 > ⚠️ **MIT 的分发义务在第 3 步**：`LICENSE`（含 `Copyright (c) 2025 Diorser`）必须出现在**每一个分发副本**中。上游的发布 ZIP 里没有 LICENSE（因为上游仓库里就没有），**你的发布包必须补上**。这是最容易漏、后果最严重的一步。
 >
 > ⚠️ 若 Task 2.7 采用"城市库本地化"方案，需在第 2 步把 `CityCode.json` 放进 `resources/assets/`（它现在不在仓库里，需要从上游下载一次并纳入版本管理）。
 
-- [ ] **Step 6.6: 图标**
+- [x] **Step 6.6: 图标**
 
-`resources/assets/app.ico`（31,971 字节）是上游图标。
+`resources/assets/app.ico`（31,971 字节）是上游图标（黄闪电 + 薄荷绿圆底）。
 
 **商标要点**：MIT **不授予商标许可**，沿用上游图标 + 改名分发，容易让用户误认为是官方版本。
 
-处理方式（二选一）：
-- **A（推荐）**：自绘新图标，替换 `resources/assets/app.ico`（同时检查同目录 7 个 PNG：`CleanMem.png` / `HardwareInfo.png` / `MonitorHistory.png` / `networkTest.png` / `Settings.png` / `ThemeIcon.png` / `Traffic.png` 是否有上游 Logo）
-- **B**：保留原图标，但在"关于"窗口与 README 显著位置声明"图标与上游相同，项目非官方"
+**已选 A（自绘新图标）并已落地**：
 
-若选 A，注意 `LiteMonitor.csproj:10` 的 `<ApplicationIcon>resources\assets\app.ico</ApplicationIcon>` 路径不变即可。
+- 7 个 PNG 已逐一核查：`CleanMem.png` / `HardwareInfo.png` / `MonitorHistory.png` / `NetworkTest.png` / `Settings.png` / `ThemeIcon.png` / `Traffic.png` 均为**无品牌信息的单色功能图标**（齿轮、扫帚等），**不含上游 Logo，无需替换**。
+- 这 7 个 PNG 与 `app.ico` 本身是**编译期嵌入资源**：`Properties/Resources.resx` 以 `ResXFileRef` 引用 `..\resources\assets\*`，运行时不从磁盘读取。因此它们**必须留在仓库**（构建需要），但**不必打进发布包**。
+- 新图标由 `scripts/make-icon.ps1` **纯代码生成**（GDI+ 绘制 + 自写多帧 ICO 编码器），不依赖任何外部素材：
+  - 圆角方形深色底板（slate-800 → 近黑蓝垂直渐变）
+  - 青色闪电（性能监控语义），线性渐变填充
+  - 右下角琥珀色「++」品牌后缀
+- 「++」的位置不是随手摆的：脚本按**「到闪电的垂线距离 == 到圆角边界的垂线距离」**这一平衡条件解出坐标（`t = (R - b) / (k + √2)`，R=58），并把推导写进脚本注释，改动闪电或加号尺寸时位置会自动重新求解。
+- 输出为 **7 帧 ICO**（16/24/32/48/64/128/256），每帧为 32 位未压缩 DIB —— 兼容性优于 PNG 压缩帧。
+- 32 px 以下「++」不可辨识，小尺寸帧自动改用无后缀的简化构图。
+- `LiteMonitor.csproj:10` 的 `<ApplicationIcon>resources\assets\app.ico</ApplicationIcon>` 路径不变。
+- **实测**：新图标已随 `LiteMonitor++.exe` 正确嵌入（`ExtractIconEx` 可提取 16/32 两档，图案与设计一致），Web 面板 favicon 走 `Icon.ExtractAssociatedIcon(Application.ExecutablePath)`，自动取到新图标。
 
-- [ ] **Step 6.7: 提交**
+> 代价：ico 由 31 KB 变为 372 KB，exe 由 187 KB 变为 528 KB，dll 由 840 KB 变为 1.5 MB。
+> 对框架依赖发布包（6.18 MB）而言可接受，换来的是彻底摆脱「像官方版」的观感。
+
+- [x] **Step 6.7: 提交**
+
+实际拆成 **两个提交**（原计划写的是一个，但本步同时修掉了一个重命名遗留的实质性 bug，
+不宜混在 `chore` 里）：
 
 ```powershell
-git add .gitignore LiteMonitor.csproj resources/assets scripts/pack-release.ps1 resources/version.json
-git commit -m "chore(rebrand): 工程卫生、版本号独立化与发布打包脚本
+# 提交 1：修 bug
+git add src/UI/AboutForm.cs src/UI/UpdateDialog.cs src/System/HardwareServices/DriverInstaller.cs `
+          resources/assets/driver.zip NOTICE
+git commit -F <msg1>
 
-- 校验 .gitignore（由多显卡 Task 1 创建），补 .review-scratch/
-- 清理陈旧第三方 DLL（源码无引用）
-- 版本号改用独立号段 {{VERSION}}，与上游 1.3.6 区分
-- 新增 scripts/pack-release.ps1：把 resources/assets 平铺进 resources/，
-  并把 LICENSE/NOTICE 打进发布包（MIT 分发义务）
-- 图标换为自有品牌（若选 A）"
+# 提交 2：工程卫生与打包
+git add .gitignore LiteMonitor.csproj resources/assets/app.ico resources/LiteMonitor++.Updater.exe `
+          scripts/ docs/superpowers/plans/2026-10-20-rebrand-compliance.md
+git commit -F <msg2>
 ```
+
+> ⚠️ **禁止 `git add -A`** —— 会把其他会话的未跟踪文件一并提交。
 
 ---
 
