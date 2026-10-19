@@ -19,4 +19,17 @@
     <ProjectReference Include="..\..\LiteMonitor.csproj" />
   </ItemGroup>
 
+  <!--
+    ★ 关闭测试并行。
+    LanguageManager.CurrentLang / _overrides 是进程级全局状态，
+    多个测试类并行改它会互相干扰（LanguageManager.Load 与 ClearOverrides
+    都会改全局字典），表现为随机的 flaky 失败。
+    本项目测试总量不大（~230 个、< 200ms），串行执行完全够快。
+  -->
+  <ItemGroup>
+    <None Update="xunit.runner.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
