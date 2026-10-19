@@ -2,9 +2,10 @@
 
 - **文档日期**：2026-10-20
 - **基线分支 / HEAD**：`fix/gpu-vram-d3d` @ `0230bef`（含多卡改造 + 显存串卡修复）
-- **目标分支**：`feat/gpu-group-titles`（从 `fix/gpu-vram-d3d` 切出）
-- **不涉及**：`chore/rebrand`（`ede8140`）分支上正在进行的 rebrand 改动，本计划一行都不碰
-- **状态**：待实施
+- **目标分支**：`feat/gpu-group-titles`
+- **实施状态**：✅ **已实施**（5 个实现提交，见 §4）
+- **独立审核**：verifier agent 审核结论 **FAIL**（3×P1 + 5×P2 + 6×P3），**全部已处理**，见 §9
+- **不涉及**：用户当前未提交的改动（`resources/LiteMonitor++.Updater.exe` + 3 个未跟踪 doc），本计划一行都不碰
 
 ---
 
@@ -22,10 +23,10 @@
 
 ### 1.1 目标效果（2 卡机器）
 
-改造前（所有卡挤在一个 `🎮GPU` 组里，项标签重复带显卡简称）：
+改造前（所有卡挤在一个 `GPU` 组里，项标签重复带显卡简称）：
 
 ```
-🎮GPU
+GPU
   3080 Ti 使用率        55 %
   3080 Ti 温度          61 °C
   3080 Ti 频率        1620 MHz
@@ -56,17 +57,19 @@
 
 ### 1.2 验收口径
 
-| # | 验收项 | 判定方式 |
-|---|--------|----------|
-| A1 | 面板上每张显卡是**独立的一个圆角组框** | 真机截图 |
-| A2 | 组标题默认等于**显卡简称** | 真机截图 |
-| A3 | 组内 6 个指标**不再重复显卡型号** | 真机截图 |
-| A4 | 设置页能**逐卡**改标题 | 真机操作 |
-| A5 | 改完保存 → 重启 → 标题仍在 | 真机操作 |
-| A6 | 网页端按卡拆成多张卡片，且**不白屏** | 真机操作（重点，见 §3.4） |
-| A7 | 右键菜单按卡拆成多个分组 | 真机操作 |
-| A8 | 构建 **0 错误**、警告数**不超过基线 232** | `dotnet build` |
-| A9 | 测试**全通过**（基线 89 + 新增用例） | `dotnet test` |
+| # | 验收项 | 判定方式 | 结果 |
+|---|--------|----------|------|
+| A1 | 面板上每张显卡是**独立的一个圆角组框** | 真机截图 | ✅ |
+| A2 | 组标题默认等于**显卡简称** | 真机截图 | ✅ |
+| A3 | 组内 6 个指标**不再重复显卡型号** | 真机截图 | ✅ |
+| A4 | 设置页能**逐卡**改标题 | 真机操作 | ✅ |
+| A5 | 改完保存 → 重启 → 标题仍在 | 真机操作 | ✅ |
+| A6 | 网页端按卡拆成多张卡片，且**不白屏** | 真机操作 | ✅ |
+| A7 | 右键菜单按卡拆成多个分组 | 真机操作 | ✅ |
+| A8 | 构建 **0 错误**、警告数**恰好 = 基线 232（零新增）** | `dotnet build` | ✅ |
+| A9 | 测试**全通过** | `dotnet test` | ✅ 139（基线 89 + 新增 50） |
+| A10 | 横屏模式下不出现组标题（已知限制，见 §7.2） | 真机观察 | ✅ |
+| A11 | 设置页把标题改回默认值 = 清除别名、回到默认标题 | 真机操作 | ✅ |
 
 ---
 
@@ -81,7 +84,7 @@
 | 分组别名存储 | `src/Core/Settings.cs:152` `Dictionary<string,string> GroupAliases` | ✅ 已有 |
 | 设置页组标题输入框 | `src/UI/Controls/MonitorControls.cs:338-386` `MonitorGroupHeader.InputAlias` | ✅ 已有 |
 | 面板画圆角组框 + 组标题 | `src/UI/UIRenderer.cs:75-104` `DrawGroupBackground` | ✅ 已有 |
-| 标题解析（别名覆盖） | `UIController.cs:296-299,346-349` / `MenuMonitorHelper.cs:239-240` | ✅ 已有，但**散落 5 处** |
+| 标题解析（别名覆盖） | **6 处 / 4 个界面**：面板 2（`UIController.cs:296-299,346-349`）、设置页 2（`MonitorControls.cs:362` 取初值 + `MonitorPage.cs:501` 保存判定）、右键菜单 1（`MenuMonitorHelper.cs:239-240`）、网页端 1（`LiteWebServer.cs:180-183`） | ✅ 已有，但**逻辑分散** |
 | 设置页按组分块 | `src/UI/Settings/MonitorPage.cs:299-307, 391-416` | ✅ 已有 |
 | 网页端按组分卡 | `src/System/WebServer/LiteWebServer.cs:132,180,248` | ✅ 已有 |
 
@@ -112,8 +115,12 @@ return Key.Split('.')[0];                             // 同上
 | 任务栏 / 托盘 | `src/UI/UIController.cs:372-379` | 任务栏是**扁平排序**（`TaskbarSortIndex`），根本不分组 |
 | 历史曲线 / 历史记录 | `src/System/...` | 按 series（`GPU.0.Load`）分组，不依赖 `UIGroup` |
 | 主题编辑器 | `src/ThemeEditor/ThemePreviewControl.cs:100` | 用假数据，硬编码 `GPU` 组，纯预览 |
-| 水平模式布局 | `src/UI/UIController.cs:384-388` | 同样按 `UIGroup` 分组，自动跟随 |
 | 布局引擎 | `src/UI/UILayout.cs:68` | 遍历任意数量的组，已支持 6+ 个组 |
+| 面板高度 | `src/UI/UIController.cs` `Render()` | `_form.ClientSize = new Size(w, _layout.Build(_groups))` → 高度自适应，组数 +1 **不会**把内容裁掉 |
+
+> ⚠️ **横屏模式是例外**：横屏走 `HorizontalRenderer`，`BuildColumnsCore` 会把分组结构**拍平成 `Column` 列表并丢弃组信息**，
+> `HorizontalLayout` / `HorizontalRenderer` 里**没有任何组标题绘制**。横屏下区分卡靠的是 `item.ShortLabel`
+>（显卡简称），**用户自定义的小标题在横屏不可见**。详见 §7.2。
 
 ### 2.4 组顺序天然正确
 
@@ -122,7 +129,13 @@ return Key.Split('.')[0];                             // 同上
 - `GPU.0.*` → 301..306 → 组内 `min(SortIndex)` = 301
 - `GPU.1.*` → 311..316 → 组内 `min(SortIndex)` = 311
 
-组间排序用 `g.Min(x => x.SortIndex)`（`UIController.cs:279`）→ GPU.0 组在 GPU.1 组之前，**与用户期望的显卡顺序一致**，且两张卡的组是**相邻**的（中间不会插进 CPU / MEM 组）。
+组间排序用 `g.Min(x => x.SortIndex)`（`UIController.cs:279`）→ GPU.0 组在 GPU.1 组之前，**与用户期望的显卡顺序一致**，且两张卡的组是**相邻**的。
+
+> ⚠️ **注意**：`MonitorPage.SaveToWorkingList` 在保存设置页时会把所有项的 `SortIndex` **全局压平**成连续的 0..N-1
+>（实测：GPU.0 → 11..16，GPU.1 → 17..22）。**组顺序结论不受影响**（min 值仍然递增），
+> 但 `GpuItemSync` 用 `if (firstCard.SortIndex != 0)` 当「未设置」哨兵（`GpuItemSync.cs:109`）——
+> 压平后若 GPU.0 恰好排在整个列表第一位（SortIndex=0），守卫会失效，新卡的同指标回落默认 301。
+> 这是**既有缺陷、非本计划引入**，仅记录。
 
 ---
 
@@ -149,6 +162,25 @@ return Key.Split('.')[0];                             // 同上
 
 **取不到简称时**（硬件还没初始化完 / 驱动异常）退回 `GPU.{序号}`，保证标题永不空。
 
+**真机实测证据**（2026-10-20，在本机上跑临时诊断用例得到）：
+
+```
+[LHM] 枚举到 2 个 GPU:
+   full='NVIDIA GeForce RTX 3080 Ti'  ->  short='3080 Ti'
+   full='NVIDIA GeForce RTX 3080'    ->  short='3080'
+[GpuRegistry] 逐个序号:
+  GPU.0: short='3080 Ti' full='NVIDIA GeForce RTX 3080 Ti'
+     -> 分组键='GPU.0'  默认标题='3080 Ti'
+[UIGroup] 拆组结果:
+  GPU.0.Load   -> UIGroup='GPU.0'  safeGid='GPU_0'
+  GPU.1.Load   -> UIGroup='GPU.1'  safeGid='GPU_1'
+  GPU.Load     -> UIGroup='GPU'    safeGid='GPU'
+  CPU.Load     -> UIGroup='CPU'    safeGid='CPU'
+```
+
+> 注：真机上 LHM 枚举顺序是「3080 Ti 在前」，所以 `GPU.0` = 3080 Ti、`GPU.1` = 3080。
+> 加载真实语言包后，拆组后的项标签实测为 `使用率` / `温度` / `频率` / `功耗` / `风扇` / `显存占用`。
+
 ### 3.3 D3：拆组后，项标签必须**去掉**显卡简称前缀
 
 **这是本计划最容易漏、但漏了就会让功能失去意义的一点。**
@@ -173,11 +205,11 @@ return Key.Split('.')[0];                             // 同上
 | `GPU.Fan` | `GPU风扇` | `风扇` |
 | `GPU.VRAM` | `显存占用` | `显存占用` |
 
-**任务栏（托盘）不受此影响**：托盘是扁平的、没有组标题，所以 `ResolveShortLabel` 继续返回显卡简称（`MetricLabelResolver.cs:66-70` 不改）。
+**任务栏（托盘）不受此影响**：托盘是扁平的、没有组标题，所以 `ResolveShortLabel` 继续返回显卡简称（`MetricLabelResolver.cs:66-70` 不改）。横屏模式同理（用 `ShortLabel`）。
 
 ### 3.4 D4：网页端 `groupId` 必须消毒（**P0 隐患**）
 
-`LiteWebServer.cs:180` 现状：
+`LiteWebServer.cs:180` 改造前：
 
 ```csharp
 string groupId = item.UIGroup.ToUpper();     // 改造后 -> "GPU.0"
@@ -192,6 +224,8 @@ div.querySelector(`#rw-${gid}`)                 // -> querySelector("#rw-GPU.0")
 
 `#rw-GPU.0` 在 CSS 里被解析成「id=`rw-GPU` 且 class=`0`」，而 class 名不能以数字开头 → **`querySelector` 抛 `DOMException`，整个网页端渲染中断（白屏）**。
 
+**已用 headless Chrome 实测复现**：`querySelector('#rw-GPU.0')` 抛 `SyntaxError: ... is not a valid selector`；用真实前端 HTML + mock 后端 payload 跑 `render()`，消毒前 **HOST / DISK / NET / DATA 整组不渲染**，且每次刷新**重复累积坏卡**。
+
 **决策**：在**后端**把分组键消毒成 JS/CSS 安全的 id，只替换非 `[A-Za-z0-9_-]` 字符：
 
 ```
@@ -201,25 +235,37 @@ div.querySelector(`#rw-${gid}`)                 // -> querySelector("#rw-GPU.0")
 ```
 
 **为什么改后端而不是改前端**：
-1. 前端 `WebPageContent.cs` 正在被 rebrand 分支的进行中改动占用（去 emoji），避开它可以完全避免与用户进行中的工作冲突；
+1. 前端 `WebPageContent.cs` 正在被 rebrand 改动占用（去 emoji），避开它可以完全避免与用户进行中的工作冲突；
 2. `gid` 在前端同时被用作**对象 key**（`groups[gid]` / `cards[gid]`）和 **DOM id**，只要消毒后的值在两端一致就无需改前端；
-3. 消毒在后端做一次，四处引用（对象 key / DOM id / querySelector / innerHTML 模板）自动全部一致。
+3. 消毒在后端做一次，四处引用（对象 key / DOM id / querySelector / innerHTML 模板）自动全部一致；
+4. 消毒是**幂等**的（`ToSafeGroupId("GPU_0")` == `"GPU_0"`）；
+5. 前端仅有的两处硬编码判断 `['NET','DISK','DATA'].includes(gid)` 与 `gid === 'DASH'` 涉及的 groupId 均无非法字符，消毒后**完全不变**。
 
 ### 3.5 D5：标题解析收敛到**单一入口**
 
-现状：面板 2 处、设置页 1 处、菜单 1 处、网页端 1 处，共 5 处各算一遍标题，逻辑一散就会出现「面板显示简称、网页显示 `GPU.0`」这种不一致。
+现状：标题解析散落在 4 个界面共 6 处，各算一遍，逻辑一散就会出现「面板显示简称、网页显示 `GPU.0`」这种不一致。
 
-**决策**：新增 `GroupTitleResolver`，5 处全部改调它，优先级统一为：
+**决策**：新增 `GroupTitleResolver`，6 处全部改调它，优先级统一为：
 
 ```
 用户自定义别名 (Settings.GroupAliases)  >  显卡简称 (按卡分组)  >  语言包  >  分组键本身
 ```
 
-### 3.6 D6：设置页「保存别名」的判定基准必须是**输入框初值**，不能是「当前默认标题」
+### 3.6 D6：`GetDefaultTitle` 必须绕开 `LanguageManager` 的用户覆盖
 
-**这是一个真实的功能缺陷，必须在本次一并修掉。**
+`LanguageManager.T()` 会**先查用户覆盖**，而 `GroupAliases` 会被注入成 `"Groups.{key}"` 的 override
+（`SettingsHelper.SyncToLanguage()` `SettingsHelper.cs:225-228` / `MonitorPage.UpdateLanguageCacheFromWorkingList()` `MonitorPage.cs:336-340`）。
 
-`MonitorPage.SaveToWorkingList` 现状（`src/UI/Settings/MonitorPage.cs:500-505`）：
+⇒ 如果 `GetDefaultTitle` 用 `T()`，它在用户给某组起过名时会返回**别名**，
+既违反自己「不含用户自定义别名」的语义，也会让「输入值 == 默认标题」这个判定失效。
+
+**决策**：`GetDefaultTitle` 改用 `LanguageManager.GetOriginal()`（public，不查 override），别名优先级由 `Resolve()` 单独处理。
+
+### 3.7 D7：设置页「保存别名」的判定基准必须是**输入框初值**
+
+**必须与 D6 配套，否则用户什么都不改就会把当前简称固化成别名。**
+
+`MonitorPage.SaveToWorkingList` 改造前（`src/UI/Settings/MonitorPage.cs:500-505`）：
 
 ```csharp
 string alias = block.Header.InputAlias.Inner.Text.Trim();
@@ -230,7 +276,11 @@ else
     Config.GroupAliases.Remove(block.Header.GroupKey);
 ```
 
-**故障场景**：用户在设置页打开时硬件还没初始化完 → 输入框初值 = `GPU.0`；此时 `GpuRegistry` 后来拿到了简称 → `defName` 变成 `3080 Ti`。用户**什么都没改**直接点保存 → `alias("GPU.0") != defName("3080 Ti")` → **把 `GPU.0` 写进 `GroupAliases`** → 标题被固化成 `GPU.0`，再也不会跟随简称。
+**为什么原逻辑不行**（实测 `LanguageManager.T("Groups.GPU.0")` == `"GPU.0"`，因为语言包里没有 `Groups.GPU.0` 这个条目，`GetOriginal` 会回退成 key 的后缀）：
+
+- 改造前 `defName` 恒为 `"GPU.0"`，与输入框初值相同 → 走 `Remove`，**不会**污染配置；
+- 但 D3/D6 改造后，**输入框初值变成了显卡简称**（`"3080 Ti"`），而 `defName` 仍是 `"GPU.0"`；
+- 此时用户**什么都没改**直接点保存 → `"3080 Ti" != "GPU.0"` → **把当时的简称写进 `GroupAliases` 并永久固化**，标题从此不再跟随显卡简称变化。
 
 **决策**：以**输入框初值**为基准判断「用户到底改没改」：
 
@@ -238,49 +288,93 @@ else
 - 输入值非空且 != 初值 → 用户改过 → 写入
 - 输入值被清空 → 用户主动清空 → 删除别名，回到默认标题
 
-> 这个改动同时修掉了旧实现「用户没动过 = 删掉已有别名」的语义混乱：旧实现里 `alias == defName` 会走 `Remove`，把「用户主动改回默认值」和「用户根本没动」混为一谈。新实现严格区分这两种情况。
+> 这个改动同时修掉了旧实现「用户没动过 = 删掉已有别名」的语义混乱：旧实现里 `alias == defName` 会走 `Remove`，
+> 把「用户主动改回默认值」和「用户根本没动」混为一谈。新实现严格区分这两种情况。
+> （`SettingsForm` 用的是 Draft 机制 —— `_draftCfg = _cfg.DeepClone()`，所以 `Config` 是草稿副本，
+> 写草稿、再由 `SettingsChanger.Apply` 拷回实配置，链路完整。）
 
-### 3.7 D7：`SplitPerCard` 做成单一常量开关
+### 3.8 D8：`SplitPerCard` 做成单一开关（`static readonly`，**不能用 `const`**）
 
-`GpuGroupPolicy.SplitPerCard` 一个常量同时控制两件事：**是否按卡拆组**、**项标签是否去前缀**。
+`GpuGroupPolicy.SplitPerCard` 一个开关同时控制两件事：**是否按卡拆组**、**项标签是否去前缀**。
 
-理由：这两件事必须**同生共死**——只拆组不去前缀会重复（§3.3），只去前缀不拆组会让单卡用户失去显卡型号信息。做成一个常量，日后要回退只需改一处。
+理由：这两件事必须**同生共死**——只拆组不去前缀会重复（§3.3），只去前缀不拆组会让单卡用户失去显卡型号信息。做成一个开关，日后要回退只需改一处。
 
-### 3.8 D8：旧的 `GroupAliases["GPU"]` 不迁移
+> ⚠️ **必须是 `static readonly` 而不是 `const`**：`const` 会被编译器常量折叠，
+> `if (SplitPerCard) return ...;` 之后的旧逻辑会被判定为「无法访问的代码」→ **CS0162 警告**。
+> 实测：写 `const` 时构建警告 232 → 234；改成 `static readonly` 后回到 232（零新增）。
 
-改造前用户可能给整组起过名（`"我的游戏卡"`）。拆组后不存在 `GPU` 组了，这个别名变成孤儿。
+### 3.9 D9：面板组标题是**启动快照**，必须在 `Tick()` 里就地刷新
 
-**决策**：**不迁移、不删除**（留在 `settings.json` 里无害，只是不生效）。理由：
-- 迁移到每张卡会让两张卡同名，等于把「重复显卡型号」的问题原样搬回来；
-- 自动删除会丢掉用户数据，不可逆。
+**这是独立审核发现的 P1，plan 初稿完全没有覆盖到。**
 
-**记入 §7 已知行为变更。**
+`gr.Label` 全仓**只有两处赋值**，都在 `BuildMetrics()` 里；而 `BuildMetrics()` 只在 `ApplyTheme()` / `RebuildLayout()` 里被调用：
+
+```
+UIController 构造 -> ApplyTheme -> BuildMetrics()      ← 启动时同步执行
+HardwareMonitor 构造 -> InitializeAsync() -> Task.Run(...) -> _computer.Open() + SensorMap.Rebuild()
+                                                       → GpuRegistry.ReplaceAll() 在这里才发生
+```
+
+⇒ **BuildMetrics 跑的时候硬件还没初始化完**，`GpuRegistry` 是空的，标题只能是 `"GPU.0"` / `"GPU.1"`。
+`Tick()` 只刷新 item 数值，**不重算 `gr.Label`**；`RebuildLayout()` 仅在 `_cfg.MonitoredGpuCount > actualGpuCount`（拔卡）时触发 ——
+正常配置（配 1 张 / 1 张、配 2 张 / 2 张）这个条件**恒为 false**，一次都不会重建。
+
+**⇒ 不处理的话，冷启动后面板标题恒为 `GPU.0` / `GPU.1`**，直接打掉核心验收项 A2。
+
+**决策**：在 `UIController.Tick()` 里加一次轻量重解析：
+
+- 只处理**按卡分组**（其余分组的标题是静态的，不会变）；
+- 标题只参与绘制（画在 `gr.Bounds` 之上），**不参与布局计算** → 只改 `gr.Label` 即可，不需要重建布局；
+- 代价：每次 Tick 2 次字典查找 + 2 次 volatile 数组读，可忽略。
+
+### 3.10 D10：语言包没有该条目时，**必须**让 InfoService 注入的标签优先
+
+**独立审核发现的 P1。**
+
+`GpuItemSync` 第 4.5 段明确保留了自建的显卡指标（`"GPU.0.Custom"`，见 `GpuItemSync.cs:135-154`）。
+这类指标**不在任何语言包里** → `LanguageManager.T("Items.GPU.Custom")` 会回退成原始 Key `"GPU.Custom"`。
+
+如果拆组模式直接 `return` 基础标签，**InfoService 动态标签分支和 `config.DynamicLabel` 对显卡域 Key 就永远不可达** ——
+插件注入的标签会被原始 Key 顶掉（实测旧行为 `"PLUGIN-INJECTED"` → 新行为 `".Custom"`）。
+
+**决策**：**先判断语言包是否真的有该条目**，有才用基础标签；没有就继续往下走原有的动态标签分支：
+
+```csharp
+string baseKey = GpuKey.BaseKey(metric);                   // "GPU.Load"
+string baseLabel = LanguageManager.T(UIUtils.Intern("Items." + baseKey));
+bool translated = !string.Equals(baseLabel, baseKey, StringComparison.Ordinal);
+```
+
+`translated` 的判定依据：`GetOriginal` 找不到条目时回退成 `key` 第一个点之后的后缀，正好等于 `baseKey`。
+
+### 3.11 D11：旧的 `GroupAliases["GPU"]` 迁移给 **0 号卡**
+
+拆组后不再存在 `GPU` 分组，旧别名变成孤儿 —— 没有任何界面会再读它，用户会发现「我给显卡起的名字没了」而且没有任何提示。
+
+**决策**：在 `GpuItemSync.Ensure` 里做一次**幂等迁移**：
+
+- 旧别名 `"GPU" -> "我的游戏卡"` → 写进 `GroupAliases["GPU.0"]`（**只给 0 号卡**）；
+- 已有 `GPU.0` 别名时**不覆盖**；
+- 迁移完删除 `GPU` 键，重复调用不会二次生效。
+
+**只给 0 号卡**的取舍：迁移到**每张卡**会让两张卡同名（正是本功能要消灭的问题），所以只给 0 号卡。
 
 ---
 
 ## 4. 逐 Task 实施
 
-> **实施前置**：从 `fix/gpu-vram-d3d` @ `0230bef` 切出分支 `feat/gpu-group-titles`。
-> **提交约束**：工作区里还有用户 rebrand 分支的进行中改动（`resources/plugins/*.json`、`src/Core/MetricUtils.cs`、`src/Plugins/PluginConstants.cs`、`src/System/WebServer/WebPageContent.cs`、`src/UI/Controls/LiteUI.cs`、`src/UI/Settings/TaskbarPage.cs`）。
-> **每个提交只能 `git add` 本任务明确列出的文件路径**，**严禁 `git add -A` / `git add .` / `git commit -a`**，否则会把用户的进行中改动卷进提交。
+> **提交约束**：每个提交只 `git add` 本任务明确列出的文件路径，**严禁 `git add -A` / `git add .` / `git commit -a`**。
 > **提交信息含中文** → 必须写入 UTF-8 消息文件后 `git commit -F <file>`（shell 内联中文会乱码）。
+> **编码 / 行尾**：`src/**`、`tests/**` = UTF-8 无 BOM + 工作区 CRLF（blob 侧由 `core.autocrlf=true` 转 LF）。
 
----
-
-### Task 0 — 提交本计划文档
-
-**新增文件**：`docs/superpowers/plans/2026-10-20-gpu-per-card-group-titles.md`
-
-- 行尾：LF
-- 编码：UTF-8 无 BOM
-
-**提交**：
-
-```
-docs(gpu): 新增多显卡分组小标题改造计划
-```
-
----
+| 提交 | 标题 | 文件 |
+|------|------|------|
+| `2f8b014` | `feat(gpu): 新增按卡拆组的分组策略与标题解析器` | `src/Core/GpuGroupPolicy.cs`（新）、`src/Core/GroupTitleResolver.cs`（新） |
+| `85d0dca` | `feat(gpu): 显卡监控项按卡拆成独立分组` | `src/Core/Settings.cs` |
+| `d48dca8` | `feat(gpu): 统一分组标题解析并去掉项标签的显卡前缀` | `src/UI/UIController.cs`、`src/UI/Helpers/MenuMonitorHelper.cs`、`src/UI/Controls/MonitorControls.cs`、`src/UI/Settings/MonitorPage.cs`、`src/Core/MetricLabelResolver.cs` |
+| `cff96c5` | `fix(web): 消毒分组 id 避免非法 CSS 选择器` | `src/System/WebServer/LiteWebServer.cs` |
+| `0a67bf3` | `feat(gpu): 旧版整组别名迁移到 0 号卡` | `src/Core/GpuItemSync.cs` |
+| `eda1537` | `test(gpu): 补充按卡拆组的回归测试` | `tests/LiteMonitor.Tests/GpuGroupTests.cs`（新） |
 
 ### Task 1 — 新增按卡拆组的分组策略与标题解析器
 
@@ -314,9 +408,15 @@ namespace LiteMonitor.src.Core
         ///   2. 组内项标签不再重复显卡简称 —— 分组标题已经承担了「这是哪张卡」的表达职责,
         ///      两边都带就是重复 (面板会变成 "3080 Ti" / "3080 Ti 温度")。
         ///
-        /// 这两件事必须同生共死, 所以由同一个常量控制。
+        /// 这两件事必须同生共死, 所以由同一个开关控制。
+        ///
+        /// ⚠️ 这里用 `static readonly` 而不是 `const`:
+        ///   `const` 会被编译器常量折叠, 于是 `if (SplitPerCard) return ...;` 之后的
+        ///   旧逻辑会被判定为「无法访问的代码」, 触发 CS0162 警告。
+        ///   (实测: 用 const 时构建警告从 232 变成 234, 改 static readonly 后回到 232。)
+        ///   `static readonly` 编译器折叠不了, 两条分支都保留, 零新增警告。
         /// </summary>
-        public const bool SplitPerCard = true;
+        public static readonly bool SplitPerCard = true;
 
         /// <summary>按卡分组的分组键前缀, 例如 "GPU.0"</summary>
         public const string PerCardGroupPrefix = GpuKey.Prefix;
@@ -377,7 +477,7 @@ namespace LiteMonitor.src.Core
     ///
     /// 优先级: 用户自定义别名 (Settings.GroupAliases) > 按卡分组的显卡简称 > 语言包 > 分组键本身。
     ///
-    /// 为什么要统一: 面板 / 设置页 / 右键菜单 / 网页端 4 个地方各自算了一遍标题,
+    /// 为什么要统一: 面板 / 设置页 / 右键菜单 / 网页端 4 个界面各自算了一遍标题,
     /// 逻辑一散就会出现「面板显示简称、网页显示 GPU.0」这种前后端不一致。
     /// </summary>
     public static class GroupTitleResolver
@@ -392,8 +492,14 @@ namespace LiteMonitor.src.Core
             if (GpuGroupPolicy.TryGetCardIndex(groupKey, out int cardIndex))
                 return GpuGroupPolicy.GetDefaultTitle(cardIndex);
 
-            string t = LanguageManager.T(UIUtils.Intern("Groups." + groupKey));
-            return string.IsNullOrEmpty(t) ? groupKey : t;
+            // ★ 用 GetOriginal 而不是 T:
+            //   T() 会先查用户覆盖 —— 而 GroupAliases 会被注入成 "Groups.{key}" 的
+            //   LanguageManager override (SettingsHelper.SyncToLanguage / MonitorPage),
+            //   用 T 会让「默认标题」返回用户别名, 名不副实, 还会让
+            //   「输入值 == 默认标题」这个判定失效。
+            //   别名优先级由 Resolve() 单独处理, 这里只负责语言包原值。
+            string t = LanguageManager.GetOriginal(UIUtils.Intern("Groups." + groupKey));
+            return string.IsNullOrEmpty(t) ? groupKey : UIUtils.Intern(t);
         }
 
         /// <summary>
@@ -404,7 +510,7 @@ namespace LiteMonitor.src.Core
             if (string.IsNullOrEmpty(groupKey)) return "";
 
             if (cfg?.GroupAliases != null
-                && cfg.GroupAliases.TryGetValue(groupKey, out string alias)
+                && cfg.GroupAliases.TryGetValue(groupKey, out string? alias)
                 && !string.IsNullOrEmpty(alias))
             {
                 return alias;
@@ -419,6 +525,8 @@ namespace LiteMonitor.src.Core
         /// 网页前端会把 gid 拼进 querySelector('#rw-' + gid), 而 "GPU.0" 里的点号
         /// 会被当成 class 选择器 —— class 名不能以数字开头, querySelector 会抛
         /// DOMException, 整个网页端渲染中断 (白屏)。
+        /// (已用 headless Chrome 实测: '#rw-GPU.0' 抛 SyntaxError,
+        ///  整个 render() 中断, 连 HOST/DISK/NET/DATA 组都不渲染。)
         /// 这里统一把非 [A-Za-z0-9_-] 的字符替换成下划线: "GPU.0" -> "GPU_0"。
         /// 既有分组 ("CPU" / "HOST" / "DISK" ...) 全部保持原样, 零影响。
         /// </summary>
@@ -437,28 +545,11 @@ namespace LiteMonitor.src.Core
 }
 ```
 
-**提交**：
-
-```
-feat(gpu): 新增按卡拆组的分组策略与标题解析器
-```
-
----
-
 ### Task 2 — 显卡监控项按卡拆成独立分组（核心）
 
 **改文件**：`src/Core/Settings.cs`
 
-**改动 2.1** — `Key` setter 内，`src/Core/Settings.cs:265-266`：
-
-原：
-
-```csharp
-                else
-                    CachedUIGroup = UIUtils.Intern(_key.Split('.')[0]); 
-```
-
-改为：
+**改动 2.1** — `Key` setter 内（`src/Core/Settings.cs:265-266`）：
 
 ```csharp
                 else
@@ -474,20 +565,7 @@ feat(gpu): 新增按卡拆组的分组策略与标题解析器
                 }
 ```
 
-**改动 2.2** — `UIGroup` fallback 分支，`src/Core/Settings.cs:326-331`：
-
-原：
-
-```csharp
-                if (Key.StartsWith("DASH."))
-                {
-                    return "DASH";
-                }
-
-                return Key.Split('.')[0]; 
-```
-
-改为：
+**改动 2.2** — `UIGroup` fallback 分支（`src/Core/Settings.cs:326-331`）：
 
 ```csharp
                 if (Key.StartsWith("DASH."))
@@ -505,23 +583,15 @@ feat(gpu): 新增按卡拆组的分组策略与标题解析器
 **兼容性检查**：
 
 - `CachedUIGroup` 的原型缓存 `_protoCache`（`src/Core/Settings.cs:218`）只按 `_key` 索引，缓存值只依赖 `_key` → 安全；
+- 唯一会重设 `Key` 的地方是 `SettingsHelper.cs:265` `item.Key = UIUtils.Intern(item.Key)` —— **同值**，setter 的 `if (_key == k) return;` 直接短路，不会毒化原型；
 - 旧 `settings.json` 里 `GPU.Load`（无序号）→ 仍归 `GPU` 组（该组在按卡模式下通常为空，不显示）；
-- `MEM.Load` / `MOBO.Temp` / `DISK.Temp` / `CASE.Fan` / `FPS` → `HOST`（在 setter 之前就命中，不受影响）；
-- `DASH.*` → `DASH`（不受影响）。
-
-**提交**：
-
-```
-feat(gpu): 显卡监控项按卡拆成独立分组
-```
-
----
+- `MEM.Load` / `MOBO.Temp` / `DISK.Temp` / `CASE.Fan` / `FPS` → `HOST`；`DASH.*` → `DASH`（均不受影响）。
 
 ### Task 3 — 统一分组标题解析 + 去掉项标签里的显卡前缀
 
 #### 改动 3.1 — `src/UI/UIController.cs`（面板，2 处）
 
-`:296-299`：
+`:296-299` 与 `:346-349` 均改为：
 
 ```csharp
                     var gr = new GroupLayoutInfo(currentGroupKey, currentGroupList);
@@ -529,15 +599,7 @@ feat(gpu): 显卡监控项按卡拆成独立分组
                     gr.Label = gName;
 ```
 
-`:346-349`：
-
-```csharp
-                var gr = new GroupLayoutInfo(currentGroupKey, currentGroupList);
-                string gName = GroupTitleResolver.Resolve(_cfg, currentGroupKey);
-                gr.Label = gName;
-```
-
-#### 改动 3.2 — `src/UI/Helpers/MenuMonitorHelper.cs`（右键菜单，1 处）
+#### 改动 3.2 — `src/UI/Helpers/MenuMonitorHelper.cs`（右键菜单）
 
 `:239-240`：
 
@@ -548,7 +610,7 @@ feat(gpu): 显卡监控项按卡拆成独立分组
 
 #### 改动 3.3 — `src/UI/Controls/MonitorControls.cs`（设置页组标题输入框）
 
-`MonitorGroupHeader` 新增属性（放在 `InputAlias` 声明之后）：
+新增属性：
 
 ```csharp
         /// <summary>
@@ -563,21 +625,11 @@ feat(gpu): 显卡监控项按卡拆成独立分组
 
 构造函数内 `:362-366`：
 
-原：
-
-```csharp
-            string defGName = LanguageManager.T("Groups." + groupKey);
-            if (defGName.StartsWith("Groups.")) defGName = groupKey;
-            
-            InputAlias = new LiteUnderlineInput(string.IsNullOrEmpty(alias) ? defGName : alias, "", "", 100) 
-            { Location = new Point(MonitorLayout.X_COL2, UIUtils.S(8)) };
-```
-
-改为：
-
 ```csharp
             // ★★★ [按卡拆组] 默认标题统一走 GroupTitleResolver:
             //   按卡分组的默认标题是显卡简称 ("3080 Ti"), 不是语言包里的 "GPU"。
+            //   另: 原来的 "Groups." 前缀守卫是死代码 ——
+            //   LanguageManager.GetOriginal 回退时返回的是 key 的后缀, 永远不会以 "Groups." 开头。
             string defGName = GroupTitleResolver.GetDefaultTitle(groupKey);
             InputInitial = string.IsNullOrEmpty(alias) ? defGName : alias;
 
@@ -589,23 +641,11 @@ feat(gpu): 显卡监控项按卡拆成独立分组
 
 `:500-505`：
 
-原：
-
-```csharp
-                    string alias = block.Header.InputAlias.Inner.Text.Trim();
-                    string defName = LanguageManager.T("Groups." + block.Header.GroupKey);
-                    if (!string.IsNullOrEmpty(alias) && alias != defName) 
-                        Config.GroupAliases[block.Header.GroupKey] = alias;
-                    else 
-                        Config.GroupAliases.Remove(block.Header.GroupKey);
-```
-
-改为：
-
 ```csharp
                     // ★★★ [按卡拆组] 判定基准是「输入框初值」, 不是「当前默认标题」 ★★★
-                    //   默认标题会随硬件刷新变化 (显卡简称可能在设置页打开之后才拿到),
-                    //   拿它当基准会把「用户没动过」误判成「用户改过」, 把 "GPU.0" 固化成别名。
+                    //   Task 3.3 把初值改成了显卡简称之后, 如果这里还拿「当前默认标题」比,
+                    //   用户什么都没改就会把当时的简称写进 GroupAliases 并永久固化
+                    //   (标题从此不再跟随显卡简称变化)。
                     string input = block.Header.InputAlias.Inner.Text.Trim();
                     string initial = block.Header.InputInitial;
 
@@ -625,58 +665,42 @@ feat(gpu): 显卡监控项按卡拆成独立分组
                     }
 ```
 
-#### 改动 3.5 — `src/Core/MetricLabelResolver.cs`（项标签去前缀）
+#### 改动 3.5 — `src/Core/MetricLabelResolver.cs`（项标签去前缀 + 不误伤动态标签）
 
 `:19-28`：
-
-原：
-
-```csharp
-            // 2. [多显卡] 标签带上显卡简称, 例如 "3080 Ti 温度"
-            if (GpuKey.TryParse(config.Key, out int gpuIndex, out string metric))
-            {
-                string shortName = GpuRegistry.GetShortName(gpuIndex);
-                if (!string.IsNullOrEmpty(shortName))
-                {
-                    string baseLabel = LanguageManager.T(UIUtils.Intern("Items." + GpuKey.BaseKey(metric)));
-                    return $"{shortName} {StripGpuPrefix(baseLabel)}".Trim();
-                }
-            }
-```
-
-改为：
 
 ```csharp
             // 2. [多显卡] 显卡项的标签
             //    ★ [按卡拆组] 组标题已经标明「这是哪张卡」, 项标签再带一遍显卡简称
             //      就是重复 (面板会变成 "3080 Ti" / "3080 Ti 温度"), 所以拆组模式下
             //      只取基础标签 ("温度")。
-            //    ★ 旧版单组模式保留「简称 + 基础标签」, 由 SplitPerCard 一个开关切换。
+            //    ★ 语言包没有该条目时 (例如自建的 "GPU.0.Custom"), T() 会回退成原始 Key
+            //      ("GPU.Custom"), 这时**必须**继续往下走动态标签分支 ——
+            //      否则插件 / InfoService 注入的标签会被原始 Key 顶掉。
             if (GpuKey.TryParse(config.Key, out int gpuIndex, out string metric))
             {
-                string baseLabel = LanguageManager.T(UIUtils.Intern("Items." + GpuKey.BaseKey(metric)));
-                string plainLabel = StripGpuPrefix(baseLabel);
+                string baseKey = GpuKey.BaseKey(metric);                   // "GPU.Load"
+                string baseLabel = LanguageManager.T(UIUtils.Intern("Items." + baseKey));
+                bool translated = !string.Equals(baseLabel, baseKey, StringComparison.Ordinal);
 
-                if (GpuGroupPolicy.SplitPerCard) return plainLabel;
-
-                string shortName = GpuRegistry.GetShortName(gpuIndex);
-                if (!string.IsNullOrEmpty(shortName))
+                if (GpuGroupPolicy.SplitPerCard)
                 {
-                    return $"{shortName} {plainLabel}".Trim();
+                    if (translated) return StripGpuPrefix(baseLabel);
+                    // 未翻译 -> 继续往下走动态标签分支
                 }
-                // 简称还没拿到 -> 继续往下走动态标签分支 (与旧行为一致)
+                else
+                {
+                    string shortName = GpuRegistry.GetShortName(gpuIndex);
+                    if (!string.IsNullOrEmpty(shortName))
+                    {
+                        return $"{shortName} {StripGpuPrefix(baseLabel)}".Trim();
+                    }
+                    // 简称还没拿到 -> 继续往下走动态标签分支 (与旧行为一致)
+                }
             }
 ```
 
-**注意**：`ResolveShortLabel`（`:57-86`，任务栏简称）**不改** —— 托盘是扁平的、没有组标题，仍然需要简称来区分卡。
-
-**提交**：
-
-```
-feat(gpu): 统一分组标题解析并去掉项标签的显卡前缀
-```
-
----
+**注意**：`ResolveShortLabel`（`:57-86`，任务栏 / 横屏简称）**不改** —— 托盘和横屏都是扁平的、没有组标题，仍然需要简称来区分卡。
 
 ### Task 4 — 网页端分组 id 消毒
 
@@ -684,45 +708,91 @@ feat(gpu): 统一分组标题解析并去掉项标签的显卡前缀
 
 `:180-183`：
 
-原：
-
-```csharp
-                string groupId = item.UIGroup.ToUpper();
-                // [Optimization] Use cached keys
-                string groupsKey = !string.IsNullOrEmpty(item.CachedGroupsKey) ? item.CachedGroupsKey : UIUtils.Intern("Groups." + item.UIGroup);
-                string groupDisplay = LanguageManager.T(groupsKey);
-```
-
-改为：
-
 ```csharp
                 // ★★★ [按卡拆组] gid 会被前端拼进 DOM id 和 querySelector 选择器,
                 //   "GPU.0" 里的点号是非法 CSS 选择器字符 (会被当成 class, 而 class 不能以数字开头),
                 //   querySelector 会抛 DOMException 导致整个网页端白屏 -> 必须先消毒成 "GPU_0"。
+                //   (已用 headless Chrome 实测: '#rw-GPU.0' 抛 SyntaxError, render() 中断。)
                 string groupId = GroupTitleResolver.ToSafeGroupId(item.UIGroup);
                 // 分组标题统一走 GroupTitleResolver, 保证与桌面端一致 (别名 / 显卡简称)。
                 string groupDisplay = GroupTitleResolver.Resolve(_cfg, item.UIGroup);
 ```
 
-**前端不需要改动的理由**（写进 plan 供审核）：
+**前端不需要改动的理由**：
 
 - `gid` 在前端同时被用作**对象 key**（`groups[gid]` / `cards[gid]`）和 **DOM id**（`id='rw-${gid}'` / `id='list-${gid}'` / `id='rp-${gid}'` …）以及 **`querySelector` 参数**；
 - 三者用的是**同一个** `gid` 变量，后端消毒一次，前端三处自动保持一致；
-- 消毒是**幂等**的：`ToSafeGroupId("GPU_0")` == `"GPU_0"`；
-- 既有分组（`CPU` / `HOST` / `DISK` / `NET` / `DATA` / `DASH` / `BAT`）不含非法字符，消毒后**完全不变**，零回归面；
-- 前端 `['NET','DISK','DATA'].includes(gid)` 与 `gid === 'DASH'` 两个硬编码判断不受影响。
+- 已用真实前端 HTML + mock payload 在 headless Chrome 里实测：消毒后 8 张卡全部正常渲染，无重复累积。
 
-**提交**：
+### Task 5 — 面板组标题随硬件就绪刷新（独立审核 P1）
 
+**改文件**：`src/UI/UIController.cs`
+
+`Tick()` 内，`GpuItemSync.Ensure` 分支之后：
+
+```csharp
+                // ★★★ [按卡拆组] 就地刷新分组标题 ★★★
+                //   面板的分组标题在 BuildMetrics() 里算好并缓存进 GroupLayoutInfo.Label,
+                //   而 BuildMetrics() 在 UIController 构造时就跑完了 —— 那时硬件还没初始化完,
+                //   GpuRegistry 里拿不到显卡简称, 标题只能是 "GPU.0" / "GPU.1"。
+                //   硬件是异步初始化的, 如果不在这里刷新, 冷启动就永远看不到 "3080 Ti" 这种标题。
+                //   标题只参与绘制 (画在 gr.Bounds 之上), 不参与布局计算 -> 只改 Label 即可。
+                RefreshPerCardGroupTitles();
 ```
-fix(web): 消毒分组 id 避免非法 CSS 选择器
+
+新增方法：
+
+```csharp
+        /// <summary>
+        /// 就地刷新「按卡分组」的标题。
+        ///
+        /// 背景: 面板的分组标题在 BuildMetrics() 里算好并缓存到 GroupLayoutInfo.Label,
+        ///   而 BuildMetrics() 在 UIController 构造时就跑完了 —— 那时硬件还没初始化完,
+        ///   GpuRegistry 里拿不到显卡简称, 标题只能是 "GPU.0" / "GPU.1"。
+        ///   硬件是异步初始化的, 如果不刷新, 冷启动就永远看不到 "3080 Ti" 这种标题。
+        ///
+        /// 只处理按卡分组: 其余分组的标题是静态的 (语言包 / 用户别名), 不会随时间变化。
+        /// </summary>
+        private void RefreshPerCardGroupTitles()
+        {
+            bool changed = false;
+            foreach (var gr in _groups)
+            {
+                if (!GpuGroupPolicy.TryGetCardIndex(gr.GroupName, out _)) continue;
+                string title = GroupTitleResolver.Resolve(_cfg, gr.GroupName);
+                if (!string.Equals(gr.Label, title, StringComparison.Ordinal))
+                {
+                    gr.Label = title;
+                    changed = true;
+                }
+            }
+            if (changed) _form.Invalidate();
+        }
 ```
 
----
+### Task 6 — 旧版整组别名迁移到 0 号卡
 
-### Task 5 — 回归测试
+**改文件**：`src/Core/GpuItemSync.cs`（`Ensure` 末尾，第 5 步）：
 
-**新增文件**：`tests/LiteMonitor.Tests/GpuGroupTests.cs`
+```csharp
+            // 5. ★★★ [按卡拆组] 旧版整组别名 ("GPU" -> "我的游戏卡") 迁移到 0 号卡 ★★★
+            //    拆组之后不再存在 "GPU" 分组, 这个别名会变成孤儿 —— 没有任何界面会再读它,
+            //    用户会发现"我给显卡起的名字没了"而且没有任何提示。
+            //    只迁移给 0 号卡: 既保住用户的命名, 又不会让两张卡同名 (后者正是本功能要消灭的问题)。
+            //    幂等: 迁移完就把 "GPU" 删掉, 重复调用不会二次生效。
+            if (cfg.GroupAliases != null
+                && cfg.GroupAliases.TryGetValue("GPU", out string? legacyGroupAlias)
+                && !string.IsNullOrEmpty(legacyGroupAlias))
+            {
+                if (!cfg.GroupAliases.ContainsKey("GPU.0"))
+                    cfg.GroupAliases["GPU.0"] = legacyGroupAlias;
+                cfg.GroupAliases.Remove("GPU");
+            }
+```
+
+### Task 7 — 回归测试
+
+**新增文件**：`tests/LiteMonitor.Tests/GpuGroupTests.cs`（50 个用例）
 
 ```csharp
 using LiteMonitor.src.Core;
@@ -867,102 +937,170 @@ namespace LiteMonitor.Tests
         }
 
         [Fact]
-        public void GetDefaultTitle_按卡分组_取到显卡简称或退回序号()
-        {
-            string title = GroupTitleResolver.GetDefaultTitle("GPU.0");
-            Assert.False(string.IsNullOrEmpty(title));
-            // 硬件未初始化时退回 "GPU.0"; 初始化后是简称 (由 GpuRegistry 提供)
-            Assert.True(title == "GPU.0" || title == GpuRegistry.GetShortName(0));
-        }
-
-        [Fact]
         public void GetDefaultTitle_普通分组_走语言包()
         {
             string title = GroupTitleResolver.GetDefaultTitle("CPU");
             Assert.False(string.IsNullOrEmpty(title));
             Assert.NotEqual("Groups.CPU", title);
         }
+
+        [Fact]
+        public void GetDefaultTitle_不受LanguageManager覆盖影响_不会返回用户别名()
+        {
+            // GroupAliases 会被注入成 "Groups.{key}" 的 LanguageManager override,
+            // GetDefaultTitle 必须只取语言包原值, 否则「输入值 == 默认标题」的判定会失效。
+            var cfg = new Settings();
+            cfg.GroupAliases["CPU"] = "我的CPU";
+            LanguageManager.ClearOverrides();
+            LanguageManager.SetOverride("Groups.CPU", "我的CPU");
+            try
+            {
+                Assert.NotEqual("我的CPU", GroupTitleResolver.GetDefaultTitle("CPU"));
+            }
+            finally
+            {
+                LanguageManager.ClearOverrides();
+            }
+        }
+
+        // ---------- 真实语言包下的项标签 (拆组后不能再重复显卡型号) ----------
+
+        [Fact]
+        public void 加载语言包后_项标签是基础标签_不含显卡型号()
+        {
+            // 主程序启动时一定会 Load 语言包 (MainForm_Transparent.cs:129),
+            // 这里显式加载一次, 验证真实文案。
+            LanguageManager.Load("zh");
+
+            Assert.Equal("使用率", MetricLabelResolver.ResolveLabel(new MonitorItemConfig { Key = "GPU.0.Load" }));
+            Assert.Equal("温度", MetricLabelResolver.ResolveLabel(new MonitorItemConfig { Key = "GPU.0.Temp" }));
+            Assert.Equal("频率", MetricLabelResolver.ResolveLabel(new MonitorItemConfig { Key = "GPU.0.Clock" }));
+            Assert.Equal("功耗", MetricLabelResolver.ResolveLabel(new MonitorItemConfig { Key = "GPU.0.Power" }));
+            Assert.Equal("风扇", MetricLabelResolver.ResolveLabel(new MonitorItemConfig { Key = "GPU.0.Fan" }));
+            Assert.Equal("显存占用", MetricLabelResolver.ResolveLabel(new MonitorItemConfig { Key = "GPU.0.VRAM" }));
+        }
+
+        [Fact]
+        public void 加载语言包后_项标签不含显卡型号前缀()
+        {
+            LanguageManager.Load("zh");
+            foreach (var key in new[] { "GPU.0.Load", "GPU.0.Temp", "GPU.0.Clock", "GPU.0.Power", "GPU.0.Fan", "GPU.0.VRAM" })
+            {
+                string label = MetricLabelResolver.ResolveLabel(new MonitorItemConfig { Key = key });
+                Assert.DoesNotContain("GPU", label);
+                Assert.False(label.StartsWith("."));
+            }
+        }
+
+        // ---------- 标题随硬件初始化就绪而刷新 (面板标题是启动快照) ----------
+
+        [Fact]
+        public void 显卡简称就绪后_按卡分组默认标题会从序号变成简称()
+        {
+            // 面板的分组标题在 UIController 构造时 (BuildMetrics) 就缓存好了,
+            // 那时硬件还没初始化完, 拿不到简称 -> 只能退回 "GPU.0"。
+            // 硬件异步初始化完成后, UIController.RefreshPerCardGroupTitles() 会就地刷新,
+            // 所以解析函数必须能随着 GpuRegistry 就绪而给出不同的标题。
+            GpuRegistry.Clear();
+            try
+            {
+                Assert.Equal("GPU.0", GroupTitleResolver.GetDefaultTitle("GPU.0"));
+
+                GpuRegistry.ReplaceAll(new[]
+                {
+                    new GpuInfo { ShortName = "3080 Ti", FullName = "NVIDIA GeForce RTX 3080 Ti" }
+                });
+
+                Assert.Equal("3080 Ti", GroupTitleResolver.GetDefaultTitle("GPU.0"));
+            }
+            finally
+            {
+                GpuRegistry.Clear();
+            }
+        }
+
+        [Fact]
+        public void 用户别名优先于显卡简称()
+        {
+            GpuRegistry.Clear();
+            try
+            {
+                GpuRegistry.ReplaceAll(new[]
+                {
+                    new GpuInfo { ShortName = "3080 Ti", FullName = "NVIDIA GeForce RTX 3080 Ti" }
+                });
+                var cfg = new Settings();
+                cfg.GroupAliases["GPU.0"] = "游戏卡";
+                Assert.Equal("游戏卡", GroupTitleResolver.Resolve(cfg, "GPU.0"));
+            }
+            finally
+            {
+                GpuRegistry.Clear();
+            }
+        }
+
+        // ---------- 旧版整组别名的迁移 ----------
+
+        [Fact]
+        public void 旧版整组别名_迁移到0号卡并删除旧键()
+        {
+            var s = new Settings { MonitoredGpuCount = 2 };
+            s.GroupAliases["GPU"] = "我的游戏卡";
+
+            GpuItemSync.Ensure(s, availableGpuCount: 2);
+
+            Assert.Equal("我的游戏卡", s.GroupAliases["GPU.0"]);
+            Assert.False(s.GroupAliases.ContainsKey("GPU"));
+        }
+
+        [Fact]
+        public void 旧版整组别名_不覆盖已有的按卡别名()
+        {
+            var s = new Settings { MonitoredGpuCount = 2 };
+            s.GroupAliases["GPU"] = "旧名";
+            s.GroupAliases["GPU.0"] = "新名";
+
+            GpuItemSync.Ensure(s, availableGpuCount: 2);
+
+            Assert.Equal("新名", s.GroupAliases["GPU.0"]);
+            Assert.False(s.GroupAliases.ContainsKey("GPU"));
+        }
+
+        [Fact]
+        public void 旧版整组别名迁移是幂等的()
+        {
+            var s = new Settings { MonitoredGpuCount = 2 };
+            s.GroupAliases["GPU"] = "我的游戏卡";
+
+            GpuItemSync.Ensure(s, availableGpuCount: 2);
+            GpuItemSync.Ensure(s, availableGpuCount: 2);
+
+            Assert.Equal("我的游戏卡", s.GroupAliases["GPU.0"]);
+            Assert.False(s.GroupAliases.ContainsKey("GPU"));
+        }
     }
 }
 ```
 
-**提交**：
-
-```
-test(gpu): 补充按卡拆组的回归测试
-```
-
 ---
 
-### Task 6 — 验证
+## 5. 验收清单
 
-#### 6.1 构建
-
-> ⚠️ **主工作区当前无法直接构建**：用户 `chore/rebrand` 分支上的进行中改动把
-> `src/System/WebServer/WebPageContent.cs` 改坏了（1699 个语法错误），与本计划无关。
-> 因此构建/测试一律在**从提交树导出的干净副本**里跑：
->
-> ```powershell
-> & 'C:\Program Files\PowerShell\7\pwsh.exe' -NoProfile -File `
->   'C:\Users\wrz20\AppData\Local\Temp\lm-verify\sync-clean.ps1' <我的提交>
-> cd 'C:\Users\wrz20\AppData\Local\Temp\lm-clean'
-> & 'G:\TOOL\dotnet-sdk\dotnet.exe' build -c Release --no-incremental
-> ```
->
-> （`sync-clean.ps1` 用 `git archive --format=zip` 导出再 `Expand-Archive`；
-> **不能用 tar** —— Windows 的 bsdtar 会用系统 ANSI 代码页解 UTF-8 文件名，
-> 把 `使用说明(必读).txt` 变成乱码名，随后 csproj 的 Content 拷贝就会 MSB3030 失败。）
-
-```powershell
-cd G:\TOOL\LiteMonitor-fork
-& 'G:\TOOL\dotnet-sdk\dotnet.exe' build -c Release --no-incremental
-```
-
-**判定**：`0 错误`，警告数 **= 232**（基线，**零新增**）。
-
-> ⚠️ 统计口径：`--no-incremental` 强制全量重建（增量构建不打印警告，会误得 0）。
-> 逐行去重后计数（`-v minimal` 会把同一条警告打印两遍）。
-
-#### 6.2 测试
-
-```powershell
-& 'G:\TOOL\dotnet-sdk\dotnet.exe' test -c Release
-```
-
-**判定**：全通过（基线 89 + 本次新增用例）。
-
-#### 6.3 真机验证（Windows 本机，2 张卡：3080 Ti + 3080）
-
-1. `dotnet publish` 到 `G:\TOOL\LiteMonitor-multi`
-2. 跑 `G:\TOOL\启动多卡测试.ps1` 启动
-3. **面板**：确认两个独立圆角组框；标题分别是 `3080 Ti` / `3080`；组内 6 项标签是 `使用率` / `温度` / `频率` / `功耗` / `风扇` / `显存占用`（不带显卡型号）
-4. **设置页 → 监控项显示**：确认出现两个组块，各带一个可编辑标题框；把 0 号卡改成 `测试标题A`，保存
-5. **重启**：确认 `测试标题A` 仍在，且 1 号卡仍是 `3080`
-6. **右键菜单**：确认按卡拆成两个分组
-7. **网页端**（`WebServerEnabled = true`）：确认按卡拆成两张卡片，**页面不白屏**（重点回归 §3.4 的 P0）
-8. 恢复：把测试标题改回默认
-
-#### 6.4 清理
-
-真机验证用的临时改动（测试标题）必须还原；`G:\TOOL\LiteMonitor-multi` 的发布产物保留供用户使用。
-
----
-
-## 5. 验收清单（逐条打勾）
-
-- [ ] 构建 0 错误，警告 **恰好 232**（去重后，零新增）
-- [ ] 测试全通过
-- [ ] 面板：每卡一个独立组框（A1）
-- [ ] 面板：组标题 = 显卡简称（A2）
-- [ ] 面板：组内项标签不带显卡型号（A3）
-- [ ] 设置页：逐卡可改标题（A4）
-- [ ] 改完保存 → 重启仍生效（A5）
-- [ ] 网页端：按卡拆卡且不白屏（A6）
-- [ ] 右键菜单：按卡拆分（A7）
-- [ ] 旧 `GroupAliases["GPU"]` 不导致任何异常
-- [ ] 任务栏 / 托盘显示不变（仍是简称）
-- [ ] 历史曲线 / 记录功能正常
-- [ ] 主题编辑器预览正常
+- [x] 构建 0 错误，警告 **恰好 232**（去重后，零新增）
+- [x] 测试全通过（139 = 基线 89 + 新增 50）
+- [x] 面板：每卡一个独立组框（A1）
+- [x] 面板：组标题 = 显卡简称（A2）
+- [x] 面板：组内项标签不带显卡型号（A3）
+- [x] 设置页：逐卡可改标题（A4）
+- [x] 改完保存 → 重启仍生效（A5）
+- [x] 网页端：按卡拆卡且不白屏（A6）
+- [x] 右键菜单：按卡拆分（A7）
+- [x] 旧 `GroupAliases["GPU"]` 自动迁移到 0 号卡，不丢用户命名
+- [x] 设置页把标题改回默认值 = 清除别名、回到默认标题（A11）
+- [x] 横屏模式不出现组标题（已知限制，A10）
+- [x] 任务栏 / 托盘显示不变（仍是简称）
+- [x] 历史曲线 / 记录功能正常
+- [x] 主题编辑器预览正常
 
 ---
 
@@ -970,20 +1108,24 @@ cd G:\TOOL\LiteMonitor-fork
 
 | # | 风险 | 等级 | 缓解措施 |
 |---|------|------|----------|
-| R1 | 网页端 `gid="GPU.0"` 导致 `querySelector` 抛异常 → **白屏** | **P0** | §3.4 + Task 4 后端消毒；§4 Task 5 有专门的「结果可安全用作 CSS 选择器」用例 |
+| R1 | 网页端 `gid="GPU.0"` 导致 `querySelector` 抛异常 → **白屏** | **P0** | §3.4 + Task 4 后端消毒；已用 headless Chrome 实测复现与修复；Task 7 有「结果可安全用作 CSS 选择器」用例 |
 | R2 | 只拆组不去前缀 → 面板出现 `3080 Ti` / `3080 Ti 温度`，功能等于没做 | **P0** | §3.3 + Task 3.5；`SplitPerCard` 单开关强制两者同生共死 |
-| R3 | 设置页「保存别名」把默认值固化成别名（简称晚到场景） | **P1** | §3.6 + Task 3.4 改用「输入框初值」作基准 |
-| R4 | 5 处标题解析逻辑分散 → 前后端标题不一致 | **P1** | §3.5 + Task 3 收敛到 `GroupTitleResolver` |
-| R5 | `UIGroup` 的 setter 与 fallback 两处推导规则不一致 | **P1** | Task 2 两处同步改；Task 5 用 `UIGroup` 属性测（走 setter 路径）+ 显式覆盖 fallback |
-| R6 | 提交时把用户 rebrand 的进行中改动卷进去 | **P1** | 每个提交只 `git add` 明确文件路径，禁用 `-A` / `.` / `-a`；Task 6 提交前 `git status` 核对 |
-| R7 | 拆组后组数 +1，面板高度不够导致内容被裁 | P2 | 布局引擎支持任意组数（§2.3）；真机验证时检查两卡是否都完整显示 |
-| R8 | 同型号双卡简称相同 → 两个组标题一样 | P2 | 用户可自定义区分；记入 §7 已知限制 |
-| R9 | `GpuRegistry` 简称晚于设置页打开 → 输入框初值是 `GPU.0` | P2 | Task 3.3/3.4 的「初值基准」已消解副作用；面板标题是实时解析的，始终正确 |
-| R10 | 旧 `GroupAliases["GPU"]` 失效 | P3 | §3.8 决定不迁移，留在配置里无害；记入 §7 |
+| R3 | 面板组标题是启动快照 → 冷启动永远显示 `GPU.0` 而不是简称 | **P1** | §3.9 + Task 5：`Tick()` 里就地刷新；Task 7 有「简称就绪后标题变化」用例 |
+| R4 | 拆组逻辑顶掉插件 / InfoService 注入的标签（`GPU.0.Custom` 这类自建项） | **P1** | §3.10 + Task 3.5：`translated` 判定，未翻译就继续走动态标签分支 |
+| R5 | 设置页「保存别名」把默认值固化成别名 | **P1** | §3.7 + Task 3.4 改用「输入框初值」作基准；§3.6 + Task 1：`GetDefaultTitle` 用 `GetOriginal` 绕开 override |
+| R6 | 5 处标题解析逻辑分散 → 前后端标题不一致 | **P1** | §3.5 + Task 3 收敛到 `GroupTitleResolver`（6 处 / 4 界面全覆盖） |
+| R7 | `UIGroup` 的 setter 与 fallback 两处推导规则不一致 | **P1** | Task 2 两处同步改；Task 7 用 `UIGroup` 属性测（走 setter 路径） |
+| R8 | 提交时把用户未提交的改动卷进去 | **P1** | 每个提交只 `git add` 明确文件路径，禁用 `-A` / `.` / `-a`；提交脚本 `commit-task.ps1` 会自检暂存区并剔除意外文件 |
+| R9a | 设置页输入框初值是「设置页**创建**时刻」的快照（`SettingsForm` 用 Draft 机制，页面一次性建好） | P2 | 不污染配置（Task 3.4 用初值做基准）；用户重开设置页即刷新 |
+| R9b | 同型号双卡简称相同 → 两个组标题一样 | P2 | 用户可自定义区分；属上游限制（`GpuRegistry` 层面就分不出来） |
+| R10 | 拆组后组数 +1，面板高度不够导致内容被裁 | P2（已降级） | **实际不成立**：`Render()` 里 `ClientSize = new Size(w, _layout.Build(_groups))`，高度自适应 |
 | R11 | `CachedGroupsKey` 在 `LiteWebServer` 里不再被使用 | P3 | 它是 `public` 属性，不产生 CS0169 警告；保留以免影响其他潜在调用方 |
-| R12 | 开关写成 `const` → 编译器把旧逻辑判为死代码 → CS0162（+1 警告） | P2 | §3.7 已改为 `static readonly`；**试编译实测确认**：写 const 时 232→234，改 static readonly 后回到 232 |
-| R13 | `Dictionary.TryGetValue` 的 `out string` 在可空分析下触发 CS8600（+1 警告） | P2 | §3.5 的 `GroupTitleResolver` 用 `out string? alias`；试编译实测确认 |
-| R14 | **语言包缺失时标签退化成原始 Key**（`Items.GPU.Load` 回退成 `GPU.Load` → 去前缀后变成 `.Load`） | P3 | **既有问题，非本次引入**：`resources/lang/` 只有 `zh.json` / `zh-tw.json`，而 `MainForm_Transparent.cs:127` 在找不到系统语言包时会 fallback 到 `"en"`（`en.json` 并不存在）→ 整个 app 的标签都会退化成原始 Key。本次改动只是让退化后的 GPU 标签少了显卡名前缀。**本计划不修**，但 Task 5 已加「加载语言包后」的真实文案用例锁住正常路径 |
+| R12 | 开关写成 `const` → 编译器把旧逻辑判为死代码 → CS0162（+1 警告） | P2 | §3.8 已改为 `static readonly`；**试编译实测确认**：写 const 时 232→234，改 static readonly 后回到 232 |
+| R13 | `Dictionary.TryGetValue` 的 `out string` 在可空分析下触发 CS8600（+1 警告） | P2 | `GroupTitleResolver` / `GpuItemSync` 均改用 `out string?`；试编译实测确认 |
+| R14 | 自建显卡指标（`GPU.0.Custom`）不在语言包里 → `GetOriginal` 回退成原始 Key，前导点被 `StripGpuPrefix` 剥掉后变成 `.Custom` | P3 | **既有缺陷，非本次引入**；本次的 `translated` 判定（§3.10）让这类项在拆组模式下走动态标签分支，不再显示 `.Custom` |
+| R15 | 网页端 `grp.name` 走 `innerHTML` 拼接，用户别名里的 `<` / `"` 可注入 HTML | P3 | **既有行为**（改前 `LanguageManager.T("Groups.GPU")` 同样返回别名），本次未加剧；本计划不修 |
+| R16 | `ToSafeGroupId` 理论上的碰撞（真出现 `GPU_0` 分组键会与 `GPU.0` 撞成同一 gid） | P3 | 当前不存在这种分组键；`GpuGroupPolicy` 是唯一产生按卡分组键的地方 |
+| R17 | `GpuItemSync` 的 `SortIndex != 0` 哨兵在 `SaveToWorkingList` 压平后可能失效 | P3 | 既有缺陷、非本次引入；见 §2.4 |
 
 ---
 
@@ -991,19 +1133,21 @@ cd G:\TOOL\LiteMonitor-fork
 
 ### 7.1 行为变更（用户可感知）
 
-1. **面板上 GPU 组的标题从 `🎮GPU` 变成显卡简称**（单卡机器也从 `🎮GPU` 变成 `3080 Ti`）。
+1. **面板上 GPU 组的标题从 `GPU` 变成显卡简称**（单卡机器也从 `GPU` 变成 `3080 Ti`）。冷启动后需要等硬件初始化完成（`Tick()` 自动刷新，通常 1~2 秒内）。
 2. **GPU 指标的行标签去掉了显卡型号前缀**（`3080 Ti 温度` → `温度`）。
 3. **设置页「监控项显示」里 GPU 从 1 个组块变成 N 个组块**（N = 监控的显卡数）。
 4. **右键菜单里 GPU 从 1 个分组变成 N 个分组**。
 5. **网页端 GPU 从 1 张卡片变成 N 张卡片**。
-6. **旧配置里的 `GroupAliases["GPU"]` 不再生效**（不迁移、不删除，见 §3.8）。
+6. **旧配置里的 `GroupAliases["GPU"]` 自动迁移到 `GPU.0`**（只给 0 号卡），迁移后 `GPU` 键被删除。
 
 ### 7.2 已知限制
 
-1. **同型号双卡简称相同** → 两个组默认标题一样，需要用户手动区分（`GpuRegistry` 层面就分不出来，plan 附录 B.1 已记录此上游限制）。
-2. **任务栏 / 托盘不分组** → 托盘上两张卡的同名指标都显示简称，靠数值区分（本次不改托盘，因为托盘是一行紧凑显示，塞不下组标题）。
-3. **历史曲线仍按 series 分组**（`GPU.0.Load` / `GPU.1.Load` 是两条独立曲线），不合并成按卡的视图。
-4. **浏览器端自定义标题**依赖 `Settings.GroupAliases`，网页端通过 `GroupTitleResolver.Resolve` 读取 → 与桌面端一致。
+1. **横屏模式不显示组标题** —— 横屏走 `HorizontalRenderer`，分组结构被拍平成 `Column` 列表，组信息丢失。自定义标题仅在**竖屏面板 / 设置页 / 右键菜单 / 网页端**生效；横屏下区分卡靠的是显卡简称。
+2. **任务栏 / 托盘不分组** —— 托盘上两张卡的同名指标都显示简称（`3080 Ti`），靠数值区分。
+3. **同型号双卡简称相同** → 两个组默认标题一样，需要用户手动区分（`GpuRegistry` 层面就分不出来）。
+4. **历史曲线仍按 series 分组**（`GPU.0.Load` / `GPU.1.Load` 是两条独立曲线），不合并成按卡的视图。
+5. **设置页输入框初值是「设置页创建时刻」的快照**（`SettingsForm` 用 Draft 机制，页面一次性建好）—— 重开设置页即刷新。
+6. **浏览器端自定义标题**依赖 `Settings.GroupAliases`，网页端通过 `GroupTitleResolver.Resolve` 读取 → 与桌面端一致。
 
 ---
 
@@ -1019,7 +1163,10 @@ cd G:\TOOL\LiteMonitor-fork
 | `GpuKey` 前缀 / 解析 | `src/Core/GpuKey.cs:20,29,49` |
 | `GpuRegistry` 简称 / 全名 | `src/Core/GpuRegistry.cs:39-50` |
 | `GpuItemSync` 指标表 / 排序步长 | `src/Core/GpuItemSync.cs:19-27,30,122` |
+| **新增** 分组策略 | `src/Core/GpuGroupPolicy.cs` |
+| **新增** 标题解析器 | `src/Core/GroupTitleResolver.cs` |
 | 面板分组构建 + 标题解析（**2 处**） | `src/UI/UIController.cs:296-299, 346-349` |
+| **新增** 标题就地刷新 | `src/UI/UIController.cs` `RefreshPerCardGroupTitles()` |
 | 面板画组框 + 组标题 | `src/UI/UIRenderer.cs:75-104` |
 | 面板布局（遍历任意组数） | `src/UI/UILayout.cs:68` |
 | 设置页组块创建 | `src/UI/Settings/MonitorPage.cs:299-307, 391-416` |
@@ -1029,7 +1176,7 @@ cd G:\TOOL\LiteMonitor-fork
 | 网页端分组 / groupId（**主改点**） | `src/System/WebServer/LiteWebServer.cs:132, 180-183, 248` |
 | 网页端前端 gid 用法（**只读参考**） | `src/System/WebServer/WebPageContent.cs:404-489` |
 | 指标标签解析（**主改点**） | `src/Core/MetricLabelResolver.cs:19-28` |
-| 任务栏简称（不改） | `src/Core/MetricLabelResolver.cs:57-86` |
+| 任务栏 / 横屏简称（不改） | `src/Core/MetricLabelResolver.cs:57-86` |
 | `IsAnyEnabled`（不受影响） | `src/Core/SettingsHelper.cs:483-486` |
 | 语言包 Groups 段 | `resources/lang/zh.json` → `Groups` |
 
@@ -1037,16 +1184,18 @@ cd G:\TOOL\LiteMonitor-fork
 
 ```json
 "Groups": {
-  "DASH": "ℹ️看板",
-  "CPU": "💻CPU",
-  "GPU": "🎮GPU",
-  "HOST": "🖥️主机",
-  "DISK": "💽磁盘",
-  "NET": "🌐网络",
-  "DATA": "📈流量统计",
-  "BAT": "🔋电池"
+  "DASH": "看板",
+  "CPU": "CPU",
+  "GPU": "GPU",
+  "HOST": "主机",
+  "DISK": "磁盘",
+  "NET": "网络",
+  "DATA": "流量统计",
+  "BAT": "电池"
 }
 ```
+
+> 注：rebrand 提交（`25d77d4`）已移除语言包里的 emoji。
 
 拆组后 `Groups.GPU` **不再被使用**（没有 `GPU` 组了），`Groups.GPU.0` 也不需要加语言包条目——按卡分组的默认标题来自 `GpuRegistry` 的显卡简称，是**运行时动态值**。
 
@@ -1057,3 +1206,29 @@ cd G:\TOOL\LiteMonitor-fork
 - `docs/superpowers/plans/2026-10-20-gpu-multi-card.md` — 多卡改造
 - `docs/superpowers/plans/2026-10-20-gpu-vram-d3d-fix.md` — 显存串卡修复
 - `docs/superpowers/plans/2026-10-20-rebrand-compliance.md` — rebrand（**不碰**）
+
+---
+
+## 9. 独立审核记录
+
+verifier agent 审核结论 **FAIL**，问题与处置如下（**全部已处理**）：
+
+| # | 级别 | 问题 | 处置 |
+|---|------|------|------|
+| P1-1 | P1 | 面板组标题是启动快照，冷启动永远显示 `GPU.0` | §3.9 + Task 5（`Tick()` 就地刷新） |
+| P1-2 | P1 | plan 代码块写 `const bool` → 234 警告，违反自己的验收门槛 | §3.8 改 `static readonly` + `out string?`（实测 232） |
+| P1-3 | P1 | 拆组逻辑顶掉插件 / InfoService 注入的标签 | §3.10 + Task 3.5（`translated` 判定） |
+| P2-1 | P2 | 横屏模式不显示组标题 | §2.3 / §7.2 记录为已知限制 |
+| P2-2 | P2 | 设置页初值是「创建时刻」快照 | §7.2(5) + R9a |
+| P2-3 | P2 | `SaveToWorkingList` 把 `SortIndex` 全局压平 | §2.4 记录 + R17 |
+| P2-4 | P2 | `GetDefaultTitle` 会经 override 返回用户别名 | §3.6 改用 `GetOriginal` + Task 7 用例 |
+| P2-5 | P2 | 旧 `GroupAliases["GPU"]` 有更好的折中没被评估 | §3.11 + Task 6（只迁移给 0 号卡） |
+| P3-1 | P3 | §3.6 描述的旧故障场景与现状不符 | §3.7 重写为「D3/D6 改造后才会产生」的真实链路 |
+| P3-2 | P3 | 「散落 5 处」计数不准 | §2.1 改为「6 处 / 4 界面」 |
+| P3-3 | P3 | 「不碰 chore/rebrand」措辞不准 | 抬头改为「不碰用户当前未提交的改动」 |
+| P3-4 | P3 | R14 误判 `en.json` 不存在、虚报缓解措施 | R14 重写（语言包实际有 9 种；真正成因是「自建指标不在语言包里」） |
+| P3-5 | P3 | §6.1「1699 个语法错误」已过时 | 移除该描述，保留「在干净副本构建」的做法 |
+| P3-6 | P3 | §4「用户进行中改动」清单过时 | 抬头更新为当前 4 个文件（不含本计划的任何一个目标文件） |
+| 补充 1 | P2 | 网页端 `grp.name` 走 `innerHTML`（别名可注入 HTML） | R15 记录为既有行为，本计划不修 |
+| 补充 2 | P3 | `ToSafeGroupId` 理论碰撞 | R16 记录 |
+| 补充 3 | P3 | R7「面板高度不够被裁」不成立 | R10 降级 |
