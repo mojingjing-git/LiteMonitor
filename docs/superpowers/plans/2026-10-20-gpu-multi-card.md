@@ -2929,6 +2929,7 @@ git commit -m "feat(gpu): 历史曲线窗口支持带序号的显卡 Key
 **Files:**
 - Modify: `src/System/HardwareMonitor.cs`
 - Modify: `src/System/HardwareServices/HardwareValueProvider.cs`（`OnUpdateTickStarted` 感知显卡数量变化）
+- Modify: `src/UI/UIController.cs`（`Tick()` 里按实际卡数夹紧配置）
 
 **Interfaces:**
 - Consumes: `SensorMap.CachedGpus`（Task 6）、`Settings.MonitoredGpuCount`（Task 5）
