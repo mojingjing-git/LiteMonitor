@@ -942,6 +942,11 @@ namespace LiteMonitor.src.Core
 
             var items = cfg.MonitorItems;
 
+            // ★★★ 先清掉 null 元素 (code review 补) ★★★
+            // settings.json 被手改坏 / 插件写坏时, MonitorItems 里可能出现 null 项。
+            // 下面每处 it.Key 都会 NRE, 而 Ensure 是在 SettingsHelper.Load() 的**启动路径**上
+            // 调用的 —— 一次 NRE 就能让程序起不来。顺带也把"无意义的 null 项"清干净。
+            items.RemoveAll(it => it == null);
 
             // 1. 旧版单卡项作为迁移模板
             var legacy = new Dictionary<string, MonitorItemConfig>(StringComparer.OrdinalIgnoreCase);
@@ -982,17 +987,33 @@ namespace LiteMonitor.src.Core
                     string baseKey = GpuKey.BaseKey(metric);
                     legacy.TryGetValue(baseKey, out var tpl);
 
-                    int taskbarSort = tpl != null && tpl.TaskbarSortIndex != 0
-                        ? tpl.TaskbarSortIndex
-                        : sort;
-                    taskbarSort += i * SortStride;
+                    // ★★★ 排序基准 (code review 修正): 取"0 号卡同一指标"的实际排序值 ★★★
+                    //   优先用已存在的 GPU.0.{metric} —— 它承载了用户在"监控项显示"里拖过的顺序;
+                    //   其次用旧格式项 (首次迁移时 legacy 还在); 最后才用默认值。
+                    //   ⚠️ 不能只看 legacy: 第 1 次 Ensure 就把 legacy 项删光了,
+                    //   之后把卡数从 1 调到 2 时, 新卡会回落成默认值 (301+10=311),
+                    //   而 0 号卡仍保留用户自定义的 500 —— 面板顺序会倒挂成
+                    //   "GPU.0.Temp → GPU.1.* → GPU.0.Load"。
+                    int baseSort = sort;
+                    int baseTaskbarSort = sort;
+
+                    if (indexed.TryGetValue(GpuKey.Build(0, metric), out var firstCard))
+                    {
+                        if (firstCard.SortIndex != 0) baseSort = firstCard.SortIndex;
+                        if (firstCard.TaskbarSortIndex != 0) baseTaskbarSort = firstCard.TaskbarSortIndex;
+                    }
+                    else if (tpl != null)
+                    {
+                        if (tpl.SortIndex != 0) baseSort = tpl.SortIndex;
+                        if (tpl.TaskbarSortIndex != 0) baseTaskbarSort = tpl.TaskbarSortIndex;
+                    }
 
                     items.Add(new MonitorItemConfig
                     {
                         Key = key,
                         // ★ 排序索引同样继承旧项, 否则用户在"监控项显示"里拖过的顺序会被重置 ★
-                        SortIndex = (tpl != null && tpl.SortIndex != 0 ? tpl.SortIndex : sort) + i * SortStride,
-                        TaskbarSortIndex = taskbarSort,
+                        SortIndex = baseSort + i * SortStride,
+                        TaskbarSortIndex = baseTaskbarSort + i * SortStride,
                         VisibleInPanel = tpl?.VisibleInPanel ?? panel,
                         VisibleInTaskbar = tpl?.VisibleInTaskbar ?? taskbar,
                         // 任务栏自定义名要继承 (UserLabel 是故意不继承的: 两张卡同名没意义)
@@ -1047,6 +1068,63 @@ git commit -m "feat(gpu): 新增显卡监控项同步器
 (GPU.Load 等) 迁移过来, 保留可见性/单位/用户自定义。"
 ```
 
+- [ ] **Step 5.5: code review 补的两处健壮性修正（实测复现后追加）**
+
+> 独立 code review 用临时 harness 实测复现了这两个问题, 都在 `Ensure` 里。
+
+**5.5.1 null 元素导致启动崩溃**：`settings.json` 被手改坏 / 插件写坏时，`MonitorItems` 里可能有 `null` 项。
+`InternAllStrings` 显式容忍 null（`if (item == null) continue;`）但**不删除**它们 →
+`Ensure` 里 `it.Key` 抛 NRE → 而 `Ensure` 是在 `SettingsHelper.Load()` 的**启动路径**上调用的 →
+`Program.cs` 的 `Main` 只有 `finally` 没有 `catch` → **一次 NRE 就让程序起不来**。
+
+修法：`Ensure` 开头加 `items.RemoveAll(it => it == null);`（顺带把无意义的 null 项清干净）。
+
+**5.5.2 卡数从 1 增到 2 时第二组排序回落默认值**：
+第 1 次 `Ensure` 就把 legacy 模板删光了，所以之后把卡数改成 2 时，
+新卡的排序基准取不到模板 → 回落成默认值 `301+10=311`，
+而 0 号卡仍保留用户自定义的 `500` → 面板顺序倒挂成 `GPU.0.Temp → GPU.1.* → GPU.0.Load`。
+
+修法：排序基准改为**优先取已存在的 `GPU.0.{metric}`**（它承载了用户拖拽过的顺序），
+其次才用 legacy 模板，最后用默认值。
+
+**5.5.3 补两条回归测试**（写入 `tests/LiteMonitor.Tests/GpuItemSyncTests.cs`）：
+
+```csharp
+        [Fact]
+        public void Ensure_监控项里有null元素_不崩溃且清掉null()
+        {
+            var s = NewSettings(1);
+            s.MonitorItems.Add(null);
+            s.MonitorItems.Add(new MonitorItemConfig { Key = "CPU.Load" });
+
+            GpuItemSync.Ensure(s);
+
+            Assert.DoesNotContain(s.MonitorItems, x => x == null);
+            Assert.Contains(s.MonitorItems, x => x.Key == "CPU.Load");
+            Assert.Contains(s.MonitorItems, x => x.Key == "GPU.0.Load");
+        }
+
+        [Fact]
+        public void Ensure_卡数从一增到二_第二组排序跟随第一组不倒挂()
+        {
+            var s = NewSettings(1,
+                new MonitorItemConfig { Key = "GPU.Load", SortIndex = 500, TaskbarSortIndex = 500 });
+
+            GpuItemSync.Ensure(s);
+            Assert.Equal(500, s.MonitorItems.First(x => x.Key == "GPU.0.Load").SortIndex);
+
+            s.MonitoredGpuCount = 2;
+            GpuItemSync.Ensure(s);
+
+            int si0 = s.MonitorItems.First(x => x.Key == "GPU.0.Load").SortIndex;
+            int si1 = s.MonitorItems.First(x => x.Key == "GPU.1.Load").SortIndex;
+
+            Assert.Equal(500, si0);
+            Assert.Equal(510, si1);
+            Assert.True(si1 > si0, "第二张卡必须排在第一张卡之后");
+        }
+```
+
 ---
 
 ## Task 5: Settings 字段与 SettingsHelper 接入
@@ -1068,7 +1146,14 @@ git commit -m "feat(gpu): 新增显卡监控项同步器
   - `Settings.DetectedGpuVramTotalGBByKey : ConcurrentDictionary<string, float>`（静态，`[JsonIgnore]`）
 
 > ⚠️ `RecordedMaxGpuDynamic` 是 `Dictionary<string, float>`（非 `ConcurrentDictionary`）:
-> 它只在硬件线程 (`UpdateMaxRecord`) 里写, UI 线程只读, 所以不需要并发保护。
+> **code review 修正** —— 原注释写的「它只在硬件线程 (`UpdateMaxRecord`) 里写, UI 线程只读」**是反的**。
+> 实际调用链是 `UpdateMaxRecord` ← `ComponentProcessor.GetCompositeValue` / `HardwareValueProvider.ReadFanValue`
+> ← `HardwareValueProvider.GetValue` ← `HardwareMonitor.Get` ← **UI 线程** (`UIController.Tick`)
+> **或网页服务线程** (`LiteWebServer` 的 `hw.Get(item.Key)`)。
+> 好消息: `GetValue` 入口有 `Monitor.TryEnter(_lock, 10)`, **所有写都被 `_lock` 串行化**,
+> 不会出现 Dictionary 结构损坏 (8 线程裸写确实会抛 `InvalidOperationException`, 但这条路径够不着)。
+> 读侧 (`MetricUtils.GetAdaptivePercentage`) 不持锁, 最坏情况是读到旧值 →
+> 某一帧回落全局峰值、进度条百分比偶发跳变, 不会崩。
 > 但 `SettingsChanger.Merge` 的反射默认分支对集合类型是**按引用赋值**
 > （`SettingsChanger.cs:74-77`, 只有 `PluginInstances` / `Thresholds` 做了 JSON 深拷贝）,
 > 所以设置窗口打开期间产生的每卡峰值会在保存时**被 draft 覆盖回旧值**。
@@ -3111,6 +3196,91 @@ git commit -m "feat(gpu): 硬件刷新层支持多张显卡
 
 ---
 
+## Task 12.5: code review 补的多卡适配（超温告警 + 网页端）
+
+> **为什么需要这一步**: 前 13 个 Task 覆盖了"数据怎么按卡取", 但**没覆盖"按卡算完之后怎么展示"**。
+> 独立 code review 实测发现两处**功能回退** —— 都不报错、都不崩, 只是多卡用户看不到该看的东西。
+
+**Files:**
+- Modify: `src/UI/UIController.cs`（`CheckTemperatureAlert` 逐卡检查）
+- Modify: `src/System/WebServer/LiteWebServer.cs`（`primary` 标记用基础 Key 判定）
+
+**Interfaces:**
+- Consumes: `GpuKey.Build` / `GpuKey.ToBaseKey`（Task 2）、`GpuRegistry.GetShortName`（Task 2）
+- Produces: 每张被监控显卡都能独立触发超温告警；网页端的 GPU 负载仍被标记为 `primary`
+
+- [ ] **Step 1: 超温告警逐卡检查**
+
+`src/UI/UIController.cs` 的 `CheckTemperatureAlert()` 里，把：
+
+```csharp
+            Check("CPU.Temp", _mon.Get("CPU.Temp"), globalThreshold, LanguageManager.T("Short.CPU.Temp"));
+            Check("GPU.Temp", _mon.Get("GPU.Temp"), globalThreshold, LanguageManager.T("Short.GPU.Temp"));
+            Check("MOBO.Temp", _mon.Get("MOBO.Temp"), globalThreshold, LanguageManager.T("Short.MOBO.Temp"));
+```
+
+替换为：
+
+```csharp
+            Check("CPU.Temp", _mon.Get("CPU.Temp"), globalThreshold, LanguageManager.T("Short.CPU.Temp"));
+
+            // ★★★ [多显卡] 逐张显卡检查超温 ★★★
+            //   ⚠️ 不能只查 "GPU.Temp": 迁移后 MonitorItems 里不再有它,
+            //   而 SensorMap 只为 0 号卡写了这个旧格式 Key —— 那样等于**只告警第 0 张卡**,
+            //   多卡用户最关心的"哪张卡过热"会完全失效。
+            for (int gpuIdx = 0; gpuIdx < _cfg.MonitoredGpuCount; gpuIdx++)
+            {
+                string gpuTempKey = GpuKey.Build(gpuIdx, "Temp");
+                string gpuShort = GpuRegistry.GetShortName(gpuIdx);
+                string gpuAlertLabel = string.IsNullOrEmpty(gpuShort)
+                    ? LanguageManager.T("Short.GPU.Temp")
+                    : $"{gpuShort} {LanguageManager.T("Short.GPU.Temp")}";
+                Check(gpuTempKey, _mon.Get(gpuTempKey), globalThreshold, gpuAlertLabel);
+            }
+
+            Check("MOBO.Temp", _mon.Get("MOBO.Temp"), globalThreshold, LanguageManager.T("Short.MOBO.Temp"));
+```
+
+> `_overheatStartTimes` 的 key 变成 `GPU.{序号}.Temp`, 每张卡**独立计时** 5 秒后弹窗。
+> `_cfg.MonitoredGpuCount` 大于实际卡数时 `_mon.Get` 返回 null, `Check` 内部有 `val.HasValue` 保护, 不会误报。
+
+- [ ] **Step 2: 网页端 primary 标记用基础 Key 判定**
+
+`src/System/WebServer/LiteWebServer.cs` 里，把：
+
+```csharp
+                    else if (item.Key == "GPU.Core.Load" || item.Key == "GPU.Load") isPrimary = true;
+```
+
+替换为：
+
+```csharp
+                    // ★ [多显卡] 用基础 Key 归一化, 否则 "GPU.0.Load" / "GPU.1.Load" 匹配不上,
+                    //   GPU 分组就再也拿不到负载状态 (分组环/状态色会失真)。
+                    else if (item.Key == "GPU.Core.Load" || GpuKey.ToBaseKey(item.Key) == "GPU.Load") isPrimary = true;
+```
+
+- [ ] **Step 3: 编译并跑测试**
+
+```powershell
+$dotnet build 'G:\TOOL\LiteMonitor-fork\LiteMonitor.csproj' -c Release -v minimal
+$dotnet test 'G:\TOOL\LiteMonitor-fork\tests\LiteMonitor.Tests\LiteMonitor.Tests.csproj' -v minimal
+```
+
+Expected: 编译 0 错误，测试全通过
+
+- [ ] **Step 4: 提交**
+
+```powershell
+git add src/UI/UIController.cs src/System/WebServer/LiteWebServer.cs
+git commit -m "fix(gpu): 超温告警与网页端状态支持多显卡
+
+超温告警改为逐卡检查 (原来只查 GPU.Temp, 等于只告警第 0 张卡);
+网页端 primary 标记改用基础 Key 判定, 带序号的 GPU Load 仍能命中。"
+```
+
+---
+
 ## Task 13: 设置页与语言包
 
 **Files:**
@@ -3547,6 +3717,11 @@ git reset --hard <commit-sha>    # 仅限未推送的本地分支
   `显卡简称 + 指标`。
 - **多卡模式下「首选显卡」不生效**：`SelectMonitoredGpus` 在数量 >= 2 时按优先级取前 N 张，
   忽略 `PreferredGpu`。下拉框仍可改，但没有实际作用（切回 1 张时恢复生效）。
+- **同优先级显卡的序号可能跨重启漂移**：两张同型号卡的 `GetHwPriority` 相同，LINQ `OrderBy` 是稳定排序，
+  顺序 = LHM 的 `computer.Hardware` 枚举顺序 —— 驱动重载 / 重启后这个顺序**可能变化**，
+  于是「GPU.0」未必还是上次那张物理卡。由于每卡峰值 (`RecordedMaxGpuDynamic`) 与历史曲线
+  都按序号存储，漂移后会张冠李戴。彻底解决需要用硬件 Identifier 而非序号做持久化标识，
+  属于本计划范围之外。
 
 ## 附录 C: 旧 "GPU.*" 历史曲线的处理
 

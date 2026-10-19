@@ -120,6 +120,46 @@ namespace LiteMonitor.Tests
         }
 
         [Fact]
+        public void Ensure_监控项里有null元素_不崩溃且清掉null()
+        {
+            // settings.json 被手改坏 / 插件写坏时, MonitorItems 里可能出现 null 项。
+            // Ensure 是在 SettingsHelper.Load() 的**启动路径**上调用的, 一次 NRE 就起不来。
+            var s = NewSettings(1);
+            s.MonitorItems.Add(null);
+            s.MonitorItems.Add(new MonitorItemConfig { Key = "CPU.Load" });
+
+            GpuItemSync.Ensure(s);
+
+            Assert.DoesNotContain(s.MonitorItems, x => x == null);
+            Assert.Contains(s.MonitorItems, x => x.Key == "CPU.Load");
+            Assert.Contains(s.MonitorItems, x => x.Key == "GPU.0.Load");
+        }
+
+        [Fact]
+        public void Ensure_卡数从一增到二_第二组排序跟随第一组不倒挂()
+        {
+            // 旧配置: 用户把 GPU.Load 拖到了排序 500
+            var s = NewSettings(1,
+                new MonitorItemConfig { Key = "GPU.Load", SortIndex = 500, TaskbarSortIndex = 500 });
+
+            GpuItemSync.Ensure(s);
+            Assert.Equal(500, s.MonitorItems.First(x => x.Key == "GPU.0.Load").SortIndex);
+
+            // 把卡数改成 2。第 1 次 Ensure 已经把 legacy 项删光了,
+            // 所以第 2 次拿不到模板 —— 如果基准只认 legacy, 新卡会回落成默认值 311,
+            // 面板顺序就倒挂成 "GPU.0.Temp → GPU.1.* → GPU.0.Load"。
+            s.MonitoredGpuCount = 2;
+            GpuItemSync.Ensure(s);
+
+            int si0 = s.MonitorItems.First(x => x.Key == "GPU.0.Load").SortIndex;
+            int si1 = s.MonitorItems.First(x => x.Key == "GPU.1.Load").SortIndex;
+
+            Assert.Equal(500, si0);
+            Assert.Equal(510, si1);
+            Assert.True(si1 > si0, "第二张卡必须排在第一张卡之后");
+        }
+
+        [Fact]
         public void Ensure_保留范围内的自定义带序号Key()
         {
             // 用户/插件自建的 "GPU.0.Custom" 不该被静默删掉
