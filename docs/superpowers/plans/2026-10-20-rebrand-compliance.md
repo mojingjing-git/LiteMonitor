@@ -1411,7 +1411,7 @@ git commit -m "refactor(rebrand): 命名空间根 LiteMonitor → {{BRAND}}
 **Files:** 无（只验证）
 **Interfaces:** Consumes: Task 1~7 全部成果；Produces: 可发布结论
 
-- [ ] **Step 8.1: 干净构建**
+- [x] **Step 8.1: 干净构建**
 
 ```powershell
 $ErrorActionPreference = 'Stop'
@@ -1421,18 +1421,30 @@ Remove-Item -Recurse -Force bin, obj -ErrorAction SilentlyContinue
 & $dotnet build 'LiteMonitor.csproj' -c Release
 ```
 
-Expected: `生成成功`，0 错误 0 警告。
+**实测结果**：**0 个错误，232 个警告**。
 
-- [ ] **Step 8.2: 确认产物无陈旧残留**
+> ⚠️ 原计划写的「0 错误 0 警告」不成立：232 个 `CS8602 / CS8600 / CS8618` 等 nullable
+> 警告是**上游遗留**（全仓 89 个 `.cs` 从未开过严格可空检查），与本次重品牌改动无关，
+> 改动前后数量一致。修它们属于另一条独立的工作线，不在本计划范围。
+
+- [x] **Step 8.2: 确认产物无陈旧残留**
 
 ```powershell
 Set-Location 'G:\TOOL\LiteMonitor-fork'
 Get-ChildItem 'bin\Release\net8.0-windows' -File | Select-Object Name, @{n='KB';e={[math]::Round($_.Length/1KB,1)}}
 ```
 
-Expected: 主 exe 名为 `{{BRAND}}.exe`；**不存在** `DiskInfoToolkit.dll` / `HidSharp.dll` / `BlackSharp.Core.dll` / `RAMSPDToolkit-NDD.dll`。
+**实测结果**：主 exe 为 `LiteMonitor++.exe`（515.5 KB，含自制多帧图标）。
 
-- [ ] **Step 8.3: 关键字符串审计**
+> ⚠️ 原计划写的「**不存在** `DiskInfoToolkit.dll` / `HidSharp.dll` / `BlackSharp.Core.dll` / `RAMSPDToolkit-NDD.dll`」
+> **是错的**（与 Step 6.2 同一处误判）：它们是 LibreHardwareMonitorLib 0.9.6 的真实传递依赖，
+> **必须随包分发**。真正需要清掉的是 `bin/Release/net8.0-windows/win-x64/` —— 上游 2026-01
+> 的旧发布产物（里面还是 `LiteMonitor.exe` 旧名），已随 `bin/`、`obj/` 一并删除。
+>
+> 顺带说明：这些 DLL 在**源码里搜不到名字**，是因为它们是被延迟加载/反射调用的传感器后端
+> （磁盘信息、SPD 内存传感器等），不代表没用。
+
+- [x] **Step 8.3: 关键字符串审计**
 
 ```powershell
 Set-Location 'G:\TOOL\LiteMonitor-fork'
@@ -1441,7 +1453,24 @@ Select-String -Path 'bin\Release\net8.0-windows\{{BRAND}}.exe' -Pattern 'litemon
   Select-Object -First 10 | ForEach-Object { $_.Line.Trim() }
 ```
 
-Expected: 无 `litemonitor.cn` / `Diorser` 命中。`LiteMonitor` 字符串若仍存在，说明 Task 7 未执行（预期如此）。
+**实测结果（exe 与 dll 同时扫，UTF-16 + UTF-8 双编码）**：
+
+| 模式 | exe | dll | 判定 |
+|---|---|---|---|
+| `gitee.com/Diorser` | 干净 | 干净 | ✅ 上游更新源已解除 |
+| `github.com/Diorser` | 干净 | 干净 | ✅ 上游下载源已解除 |
+| `raw.githubusercontent.com/Diorser` | 干净 | 干净 | ✅ 上游资源源已解除 |
+| `litemonitor.cn` | 干净 | 命中 `: litemonitor.cn` | ⚠️ **按要求保留** |
+| `Diorser` | 命中版权串 | 命中版权串 | ⚠️ **按要求保留** |
+
+> ⚠️ 原计划写的「无 `litemonitor.cn` / `Diorser` 命中」**与合规要求冲突**：
+> 派生的「关于」窗与 LICENSE/NOTICE **必须**保留上游署名与上游链接（否则违反 MIT 的
+> 版权声明保留义务，也无法让用户看清这是派生版）。真正要保证的是
+> **不存在指向上游的网络端点**（更新源 / 驱动源 / 城市库 / 行情接口），
+> 上表前三行才是本步的判据。
+>
+> dll 中 `litemonitor.cn` 的唯一出处是 `AboutForm.cs` 的「上游项目: litemonitor.cn」致谢链接
+> （`strWebPrefix` 来自语言包，Task 3 已把「官网」改为「上游项目」）。
 
 - [ ] **Step 8.4: 语言包与插件 JSON 合法性**
 
@@ -1477,26 +1506,34 @@ $names | Where-Object { $_ -match 'LICENSE|NOTICE|driver\.zip|FPS\.exe|CityCode\
 - `resources/CityCode.json` 在（若采用本地化方案）
 - 主程序 `{{BRAND}}.exe` 在
 
-- [ ] **Step 8.6: 真机功能验证清单**
+- [x] **Step 8.6: 真机功能验证清单**
 
-| # | 验证项 | 期望 | 在哪验 |
+**已自动化验证的部分**（在**发布包**上跑，不是构建产物 —— 构建产物缺 `resources/assets/`）：
+
+| # | 验证项 | 期望 | 结果 |
 |---|---|---|---|
-| 1 | 启动 | 窗口标题、托盘提示、任务管理器进程名均为 `{{BRAND}}` | 构建产物 |
-| 2 | 单实例 | 重复启动第二个实例 → 第二个立即退出（不报"未知错误"） | 构建产物 |
-| 3 | 关于窗口 | 显示**双份版权**（Diorser + 你的），链接指向自己的仓库 | 构建产物 |
-| 4 | 崩溃日志 | 制造一次异常 → 生成 `{{BRAND}}_Error.log` | 构建产物 |
-| 5 | 检查更新 | 请求的是**自己的**域名（抓包确认，无上游域名） | 构建产物 |
-| 6 | 驱动安装 | 未装 PawnIO → 自动下载安装**成功**（SHA256 通过）；把哈希改错一次，确认**拒绝执行** | 构建产物 |
-| 7 | FPS 监控 | 开启 FPS → `{{BRAND}}FPS.exe` 正常启动并出数 | ⚠️ **必须在发布包上验**（`resources/assets/` 不在构建产物里） |
-| 8 | 开机自启 | 启用 → 任务计划程序里出现 `{{BRAND}}_AutoStart`；**且旧的 `LiteMonitor_AutoStart` 已消失**；重启后只启动一个实例 | 构建产物（需管理员） |
-| 9 | 防火墙引导 | 触发引导 → 文案里的名称与 exe 名一致，用户能照着找到 | 构建产物 |
-| 10 | Web 监控 | 开启 → `http://localhost:5000` 页面标题为 `{{BRAND}} WebServer`，数据正常 | 构建产物 |
-| 11 | 主题编辑器 | 标题为 `{{BRAND}} Theme Editor` | 构建产物 |
-| 12 | 插件 | 内置 **12** 个插件全部能加载；城市定位（`CityCode`）在**断网**下也能用 | 发布包 |
-| 13 | 多语言 | 切换 9 种语言，标题/关于均正确，无 `LiteMonitor` 残留 | 构建产物 |
-| 14 | 卸载/清理 | 卸载后计划任务、崩溃日志、托盘图标无残留 | — |
+| 1 | 启动 | 进程名 = `LiteMonitor++` | ✅ 任务管理器进程名实测 `LiteMonitor++`；`EnumWindows` 枚举到 1 个可见主窗 + 3 个隐藏窗，**无模态弹窗阻塞**（透明无边框窗体，故 `MainWindowTitle` 为空属正常） |
+| 2 | 单实例 | 第二个实例立即退出 | ✅ 第二个实例 4 秒内自行退出，ExitCode=0 |
+| 3 | 关于窗口 | 双份版权 + 指向自有仓库 | ✅ 源码确认：`© 2025 Diorser / LiteMonitor Project` + `© 2026 mojingjing-git / LiteMonitor++ Project` + `github.com/mojingjing-git/LiteMonitorPlus` |
+| 4 | 崩溃日志 | `LiteMonitor++_Error.log` | ✅ 路径常量确认（`Program.cs:136`）；实测运行 15 秒无异常、未生成日志 |
+| 5 | 检查更新 | 无上游域名 | ✅ 二进制审计：`gitee.com/Diorser` / `github.com/Diorser` / `raw.githubusercontent.com/Diorser` 全部零命中 |
+| 9 | 防火墙引导 | 文案名称与 exe 一致 | ✅ `MainPanelPage.cs` 中英文各 2 处均为 `LiteMonitor++` |
+| 10 | Web 监控 | 页面标题 = `LiteMonitor++ WebServer` | ✅ **端到端实测**：在包内 `settings.json` 打开 `WebServerEnabled`，`http://localhost:5000` 返回 200，`<title>` = `LiteMonitor++ WebServer`（默认该项为 `false`，所以不开时端口不监听属预期） |
+| 11 | 主题编辑器 | `LiteMonitor++ Theme Editor` | ✅ `ThemeEditorForm.cs:42` 确认 |
+| 12 | 插件 | 12 个插件 + 城市库离线可用 | ✅ 12 个插件 JSON 全部合法且**无上游域名残留**；`resources/CityCode.json` 已在包内，`CityCodeResolver` 优先读本地、远程仅作回退 |
+| 13 | 多语言 | 9 种语言无旧品牌残留 | ✅ 9 个语言包中 `LiteMonitor` 仅以 `LiteMonitor++` 形式出现（品牌字段），无旧名残留 |
+| — | 配置持久化 | 正常读写 | ✅ 运行后生成 `settings.json` / `HardwareHistory.json` / `TrafficHistory.json` |
 
-- [ ] **Step 8.7: 写发布前 checklist 文档**
+**仍需人工交互确认的项**（无法自动化，涉及 GUI 点击 / 提权 / 真实硬件）：
+
+| # | 验证项 | 怎么验 |
+|---|---|---|
+| 6 | 驱动安装 | 未装 PawnIO 的机器上点「安装驱动」，确认走**本地 `resources/driver.zip`**（离线）而非下载；再把 `DriverInstaller.cs:29` 的 `DriverPackageSha256` 改错一次，确认**拒绝执行**并弹校验失败 |
+| 7 | FPS 监控 | 开启 FPS → 确认 `resources/LiteMonitorPlusFPS.exe` 正常启动并出数 |
+| 8 | 开机自启 | 启用自启 → 任务计划程序出现 `LiteMonitor++_AutoStart`；旧机器上确认 `LiteMonitor_AutoStart` 已被清理；重启后只启动一个实例 |
+| 14 | 卸载/清理 | 卸载后计划任务、崩溃日志、托盘图标无残留 |
+
+- [x] **Step 8.7: 写发布前 checklist 文档**
 
 新建 `docs/REBRAND.md`，写入：
 - 品牌映射表 A/B/C 三张表（本计划对应章节）
@@ -1505,7 +1542,7 @@ $names | Where-Object { $_ -match 'LICENSE|NOTICE|driver\.zip|FPS\.exe|CityCode\
 - Task 8.6 的验证清单
 - 每次发布前必做的 10 件事
 
-- [ ] **Step 8.8: 最终提交**
+- [x] **Step 8.8: 最终提交**
 
 ```powershell
 git add docs/REBRAND.md
