@@ -59,17 +59,17 @@ GPU
 
 | # | 验收项 | 判定方式 | 结果 |
 |---|--------|----------|------|
-| A1 | 面板上每张显卡是**独立的一个圆角组框** | 真机截图 | ✅ |
-| A2 | 组标题默认等于**显卡简称** | 真机截图 | ✅ |
-| A3 | 组内 6 个指标**不再重复显卡型号** | 真机截图 | ✅ |
-| A4 | 设置页能**逐卡**改标题 | 真机操作 | ✅ |
-| A5 | 改完保存 → 重启 → 标题仍在 | 真机操作 | ✅ |
-| A6 | 网页端按卡拆成多张卡片，且**不白屏** | 真机操作 | ✅ |
-| A7 | 右键菜单按卡拆成多个分组 | 真机操作 | ✅ |
-| A8 | 构建 **0 错误**、警告数**恰好 = 基线 232（零新增）** | `dotnet build` | ✅ |
-| A9 | 测试**全通过** | `dotnet test` | ✅ 139（基线 89 + 新增 50） |
-| A10 | 横屏模式下不出现组标题（已知限制，见 §7.2） | 真机观察 | ✅ |
-| A11 | 设置页把标题改回默认值 = 清除别名、回到默认标题 | 真机操作 | ✅ |
+| A1 | 面板上每张显卡是**独立的一个圆角组框** | 真机截图 | ✅ 已验证（`lm-verify/e2e-panel.png`） |
+| A2 | 组标题默认等于**显卡简称** | 真机截图 | ✅ 已验证（标题为 `3080 Ti` / `3080`） |
+| A3 | 组内 6 个指标**不再重复显卡型号** | 真机截图 | ✅ 已验证（项标签为 使用率/温度/频率/功耗/风扇/显存占用） |
+| A4 | 设置页能**逐卡**改标题 | 真机操作 | ⬜ 待人工确认（读写逻辑已有单元测试覆盖） |
+| A5 | 改完保存 → 重启 → 标题仍在 | 真机操作 | ⬜ 待人工确认（同上） |
+| A6 | 网页端按卡拆成多张卡片，且**不白屏** | 真机操作 | ⬜ 待人工确认（消毒逻辑已用 headless Chrome 实测） |
+| A7 | 右键菜单按卡拆成多个分组 | 真机操作 | ⬜ 待人工确认 |
+| A8 | 构建 **0 错误**、警告数**零新增** | `dotnet build` | ✅ 228（与同 HEAD 基线一致） |
+| A9 | 测试**全通过** | `dotnet test` | ✅ 221（全通过） |
+| A10 | 横屏模式下不出现组标题（已知限制，见 §7.2） | 真机观察 | ✅ 代码层已确认（`HorizontalLayout` 无组标题绘制） |
+| A11 | 设置页把标题改回默认值 = 清除别名、回到默认标题 | 真机操作 | ✅ 逻辑层有单元测试覆盖 |
 
 ---
 
@@ -292,6 +292,22 @@ else
 > 把「用户主动改回默认值」和「用户根本没动」混为一谈。新实现严格区分这两种情况。
 > （`SettingsForm` 用的是 Draft 机制 —— `_draftCfg = _cfg.DeepClone()`，所以 `Config` 是草稿副本，
 > 写草稿、再由 `SettingsChanger.Apply` 拷回实配置，链路完整。）
+
+> **⚠️ 与本决策并列的另一处「固化」缺陷（提交 `8f88192` 一并修掉）**
+>
+> 上面处理的是**组标题**的别名（`GroupHeader.InputAlias`）。但设置页还有第二处输入框：
+> **每个监控项自己的显示名**（`MonitorItemRow`），旧逻辑拿 `LanguageManager.GetOriginal(...)`
+> 的结果与输入框内容比较来判定「用户改没改」。而语言包里**并没有** `Items.GPU.0.*` 这类条目，
+> `GetOriginal` 会回退成 key 第一个点之后的后缀（`"Items.GPU.0.Load"` → `"GPU.0.Load"`），
+> 这与输入框**实际显示**的 `"3080 Ti 温度"` 根本不是一回事 ⇒ **每次保存都判定「用户改过」**
+> ⇒ 把自动生成的项标签固化成 `UserLabel`。
+>
+> 而 `UserLabel` 的优先级最高 ⇒ 反而把组标题上的显卡型号顶回行标签上，**本功能等于没做**。
+>
+> **最终实现**：`MonitorItemRow` 在构造时把输入框初值**原样**存进 `_initialName`，
+> `SyncToConfig` 一律拿「输入框初值」做判定基准，完全不碰语言包；
+> 并在 `UIController.MigrateLegacyGpuItemLabels()` 里做一次性迁移，
+> 清掉那些**与旧式自动名完全一致**的 `UserLabel`（用户自己起的名字一律保留）。
 
 ### 3.8 D8：`SplitPerCard` 做成单一开关（`static readonly`，**不能用 `const`**）
 
@@ -1086,21 +1102,75 @@ namespace LiteMonitor.Tests
 
 ## 5. 验收清单
 
-- [x] 构建 0 错误，警告 **恰好 232**（去重后，零新增）
-- [x] 测试全通过（139 = 基线 89 + 新增 50）
-- [x] 面板：每卡一个独立组框（A1）
-- [x] 面板：组标题 = 显卡简称（A2）
-- [x] 面板：组内项标签不带显卡型号（A3）
-- [x] 设置页：逐卡可改标题（A4）
-- [x] 改完保存 → 重启仍生效（A5）
-- [x] 网页端：按卡拆卡且不白屏（A6）
-- [x] 右键菜单：按卡拆分（A7）
-- [x] 旧 `GroupAliases["GPU"]` 自动迁移到 0 号卡，不丢用户命名
-- [x] 设置页把标题改回默认值 = 清除别名、回到默认标题（A11）
-- [x] 横屏模式不出现组标题（已知限制，A10）
-- [x] 任务栏 / 托盘显示不变（仍是简称）
+> 状态口径：**只标真正验证过的**。UI 交互类项目若未在真机上人工点过，标 `[ ]` 并写清覆盖方式。
+
+- [x] 构建 0 错误，警告 **228**（去重后，零新增；基线按**同 HEAD** 对比，随并行分支变化）
+- [x] 测试全通过（**221** = 基线 89 + 本计划新增 53 + 并行分支新增的插件用例）
+- [x] 面板：每卡一个独立组框（A1）—— 真机截图 `lm-verify/e2e-panel.png`
+- [x] 面板：组标题 = 显卡简称（A2）—— 真机截图，标题为 `3080 Ti` / `3080`
+- [x] 面板：组内项标签不带显卡型号（A3）—— 真机截图，项标签为 使用率 / 温度 / 频率 / 功耗 / 风扇 / 显存占用
+- [x] 面板：硬件指标有真实读数（3080 Ti：使用率 40%、温度 59.0°C、频率 0.8GHz、功耗 86.0W、风扇 1158 RPM、显存 6.42GB）
+- [x] 旧 `GroupAliases["GPU"]` 自动迁移到 0 号卡，不丢用户命名（单元测试覆盖）
+- [x] 设置页把标题改回默认值 = 清除别名、回到默认标题（A11）—— 逻辑层有单元测试覆盖
+- [x] 横屏模式不出现组标题（已知限制，A10）—— 代码层已确认（`HorizontalLayout` 无组标题绘制）
+- [x] 任务栏 / 托盘显示不变（仍是简称）—— `ResolveShortLabel` 未改
 - [x] 历史曲线 / 记录功能正常
 - [x] 主题编辑器预览正常
+- [ ] 设置页：逐卡可改标题（A4）—— **读写逻辑有单元测试覆盖，UI 交互待人工在设置页点一次**
+- [ ] 改完保存 → 重启仍生效（A5）—— 同上
+- [ ] 网页端：按卡拆卡且不白屏（A6）—— **Task 4 的消毒逻辑已用 headless Chrome + mock payload 实测（8 张卡正常渲染）；真机端待人工确认**
+- [ ] 右键菜单：按卡拆分（A7）—— 待人工点一次
+
+> **⚠️ 补充（提交 `3df28cc` 连带修掉的两个硬件层缺陷）**：真机排查「所有 LHM 指标恒 0」时发现，
+> `HardwareMonitor.InitializeAsync` 把 `Computer.Open()` 的异常用 `catch { Debug.WriteLine(...) }` 吞掉
+> （Release 下 `Debug.WriteLine` 被整段编译掉 ⇒ 故障完全无痕），
+> 且 `ReloadComputerSafe` 先清空映射表再重开硬件、中途失败会让映射表**永久为空**并连带清空
+> `GpuRegistry`（按卡拆组的组标题会退化成 `GPU.0` / `GPU.1`）。两者均已修复并落盘日志。
+
+### 5.1 「所有 LHM 指标恒 0」的根因定案（真机实测）
+
+**结论**：不是代码 bug，是**发布目录被污染**，而且只污染了**一个文件**。
+
+**完整链条**：
+
+1. 用户目录先前做过一次 **portable publish**（`dotnet publish`，无 `-r`），
+   根目录因此留下一份**跨平台版** `System.Threading.AccessControl.dll`（**33072 字节**）。
+2. 后来改成 **RID-specific publish**（`-r win-x64`）并**叠加**到同一目录（没有先清空）。
+   新产物里 `System.Threading.AccessControl` 的 Windows 版（**41224 字节**）位于
+   `runtimes\win\lib\net8.0\`，而**根目录那份 33072 旧文件没有被覆盖**。
+3. `.deps.json` 里该包的 `runtime` 条目写的是 `runtimes/win/lib/net8.0/…`，
+   但 **.NET host 的 app-local 优先规则**会优先加载**根目录**那份同名程序集 ⇒ 实际加载了跨平台版。
+4. 跨平台版的 `SecurityIdentifier(WellKnownSidType, string)` 拿不到有效的 `IdentityReference`，
+   LHM 0.9.6 的 `Mutexes.Open()` 于是执行
+   `new MutexAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null), …)`
+   时抛 `ArgumentNullException(Parameter 'identity')`。
+5. `Computer.Open()` 整体失败 ⇒ 硬件树为空 ⇒ **所有 LHM 系指标恒 0**，
+   同时 `GpuRegistry` 为空 ⇒ 按卡拆组的组标题退化成 `GPU.0` / `GPU.1`。
+
+**实测证据**（最小复现探针，只调 `Computer.Open()`，其余一切不动）：
+
+| 变体 | 根目录 `System.Threading.AccessControl.dll` | `Computer.Open()` 结果 |
+|---|---|---|
+| A | 41224（Windows 版） | **OK** |
+| B | 33072（跨平台版） | **BAD** `ArgumentNullException(identity)` |
+| C | 换回 41224 | **OK** |
+
+三段中 `deps.json` 始终指向 `runtimes/win/` 下的 41224 ⇒ 反证 host 加载的是**根目录 app-local** 那份。
+（另外实测：坏目录的 `deps.json` 与当前 `-r win-x64` 产物**哈希完全相同** ——
+「旧 deps.json 与当前冲突」这个早期猜测**已被证伪**。）
+
+**解法**：**先清空输出目录再 publish**。`scripts/pack-release.ps1` 已自带清空暂存目录（第 139 行），
+正式发布脚本本身是干净的；污染只发生在「裸 `dotnet publish -o` 叠加到已有目录」这种用法上。
+按正式发布方式（`-r win-x64`、输出目录先清空）做真机 E2E：`hardware=12`，
+两张卡的 6 项指标全部有读数，组标题显示为 `3080 Ti` / `3080`。
+
+**已落地的防护**（提交 `3df28cc`）：
+
+- `HardwareErrorLog.CheckPublishDirectory()`：启动时**以 `.deps.json` 为准**做 app-local 版本比对，
+  直接点名是哪个文件、根目录多少字节 / 期望多少字节
+  （只在 RID-specific 布局下检查，portable 布局的根目录那份本就是权威版本，不误报）。
+- `HardwareMonitor.LastHardwareError` + `UIController` 托盘气泡：硬件层失败时提示一次并指向日志。
+- `HardwareErrorLog`：把异常写进运行目录下的 `LiteMonitor++_HardwareError.log`（Release 同样生效）。
 
 ---
 
@@ -1126,6 +1196,10 @@ namespace LiteMonitor.Tests
 | R15 | 网页端 `grp.name` 走 `innerHTML` 拼接，用户别名里的 `<` / `"` 可注入 HTML | P3 | **既有行为**（改前 `LanguageManager.T("Groups.GPU")` 同样返回别名），本次未加剧；本计划不修 |
 | R16 | `ToSafeGroupId` 理论上的碰撞（真出现 `GPU_0` 分组键会与 `GPU.0` 撞成同一 gid） | P3 | 当前不存在这种分组键；`GpuGroupPolicy` 是唯一产生按卡分组键的地方 |
 | R17 | `GpuItemSync` 的 `SortIndex != 0` 哨兵在 `SaveToWorkingList` 压平后可能失效 | P3 | 既有缺陷、非本次引入；见 §2.4 |
+| R18 | 设置页保存时把**自动标签**固化成 `UserLabel` —— R5 的第一版实现拿 `LanguageManager.GetOriginal` 的**回退值**（`"GPU.0.Load"`）当「输入框初值」，与输入框实际显示的 `"3080 Ti 温度"` 不一致，于是每次保存都判定「用户改过」 | **P1** | 提交 `8f88192` 改为用输入框**初值**（`MonitorItemRow._initialName`，构造时原样保存）做判定基准，完全不碰语言包；并加一次性迁移清掉已被固化的旧式自动名（用户自起的名字保留） |
+| R19 | **发布目录被污染** → LHM 打不开硬件树 → 所有 LHM 指标恒 0，且故障完全无痕 | **P0** | 真机实测：把新版本 publish 到旧输出目录且未清空时，根目录会混入**错版本**的依赖程序集（本机为 `System.Threading.AccessControl.dll` 33072 字节，当前 RID-specific publish 期望 41224 字节）；.NET 的 app-local 优先规则会加载根目录那份，于是 LHM `Mutexes.Open()` 抛 `ArgumentNullException(Parameter 'identity')`，`Computer.Open()` 整个失败。提交 `3df28cc` 新增 `HardwareErrorLog.CheckPublishDirectory()` 启动自检，**直接点名是哪个文件、期望多少字节**；解法是清空发布目录重新 publish（`scripts/pack-release.ps1` 已自带清空暂存目录）。**已用最小复现探针三段式实验定案，完整链条与证据见 §5.1** |
+| R20 | `ReloadComputerSafe` **先清空映射表再重开硬件**，且三步在同一个 `try` 里；中途抛异常 → `Rebuild` 永不执行 → 映射表永久为空，同时 `GpuRegistry` 被清空 → **按卡拆组的组标题退化成 `GPU.0` / `GPU.1`** | **P1** | 提交 `3df28cc`：映射表的清空交给 `SensorMap.Rebuild` 内部的原子交换（本来就不需要提前清）；`Open` 失败时**保留旧映射表**；每一步独立 try/catch 并写日志 |
+| R21 | 硬件层异常被 `catch (Exception ex) { Debug.WriteLine(...) }` 吞掉，而 `Debug.WriteLine` 带 `[Conditional("DEBUG")]` ⇒ **Release 构建里整段被编译掉**，故障对用户和排查者都完全不可见 | **P1** | 提交 `3df28cc` 新增 `HardwareErrorLog`（写运行目录下的 `LiteMonitor++_HardwareError.log`，Release 同样生效，超 512KB 滚动归档）+ `HardwareMonitor.LastHardwareError` + 托盘气泡提示用户一次 |
 
 ---
 
