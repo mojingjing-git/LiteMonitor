@@ -281,5 +281,72 @@ namespace LiteMonitor.Tests
             Assert.Equal("我的游戏卡", s.GroupAliases["GPU.0"]);
             Assert.False(s.GroupAliases.ContainsKey("GPU"));
         }
+        // ---------- 旧式自动名的识别与迁移 ----------
+
+        [Fact]
+        public void BuildLegacyAutoLabel_显卡项_返回旧式的自动标签()
+        {
+            GpuRegistry.Clear();
+            try
+            {
+                GpuRegistry.ReplaceAll(new[]
+                {
+                    new GpuInfo { ShortName = "3080 Ti", FullName = "NVIDIA GeForce RTX 3080 Ti" }
+                });
+                LanguageManager.Load("zh");
+
+                // 旧行为下显卡项的自动标签就是 "<显卡简称> <指标名>"
+                Assert.Equal("3080 Ti 使用率", MetricLabelResolver.BuildLegacyAutoLabel(new MonitorItemConfig { Key = "GPU.0.Load" }));
+                Assert.Equal("3080 Ti 温度", MetricLabelResolver.BuildLegacyAutoLabel(new MonitorItemConfig { Key = "GPU.0.Temp" }));
+                Assert.Equal("3080 Ti 显存占用", MetricLabelResolver.BuildLegacyAutoLabel(new MonitorItemConfig { Key = "GPU.0.VRAM" }));
+            }
+            finally
+            {
+                GpuRegistry.Clear();
+            }
+        }
+
+        [Fact]
+        public void BuildLegacyAutoLabel_非显卡项或简称未就绪_返回空串()
+        {
+            GpuRegistry.Clear();
+            try
+            {
+                Assert.Equal("", MetricLabelResolver.BuildLegacyAutoLabel(new MonitorItemConfig { Key = "CPU.Load" }));
+                // 简称还没就绪 -> 构造不出旧式自动名
+                Assert.Equal("", MetricLabelResolver.BuildLegacyAutoLabel(new MonitorItemConfig { Key = "GPU.0.Load" }));
+            }
+            finally
+            {
+                GpuRegistry.Clear();
+            }
+        }
+
+        [Fact]
+        public void 旧式自动名_不会盖过新的分组小标题机制()
+        {
+            GpuRegistry.Clear();
+            try
+            {
+                GpuRegistry.ReplaceAll(new[]
+                {
+                    new GpuInfo { ShortName = "3080 Ti", FullName = "NVIDIA GeForce RTX 3080 Ti" }
+                });
+                LanguageManager.Load("zh");
+
+                // 没有 UserLabel 时, 拆组后行标签就是纯指标名 (显卡型号由组标题承担)
+                var item = new MonitorItemConfig { Key = "GPU.0.Temp" };
+                Assert.Equal("温度", MetricLabelResolver.ResolveLabel(item));
+
+                // 一旦被固化成旧式自动名, 迁移必须能认出来
+                item.UserLabel = MetricLabelResolver.BuildLegacyAutoLabel(item);
+                Assert.Equal("3080 Ti 温度", item.UserLabel);
+                Assert.Equal("3080 Ti 温度", MetricLabelResolver.BuildLegacyAutoLabel(item));
+            }
+            finally
+            {
+                GpuRegistry.Clear();
+            }
+        }
     }
 }
