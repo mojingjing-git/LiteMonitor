@@ -390,14 +390,18 @@ namespace LiteMonitor.src.SystemServices
     ///   LHM 0.9.6 的 NVIDIA 显存传感器走的是 NVAPI 的旧版全局接口
     ///   (NvAPI_GPU_GetMemoryInfo, 接口号 0x774AA982, 参数是 DisplayHandle),
     ///   多卡机器上多张 NVIDIA 卡会拿到同一份显存数据 —— 也就是"第 2 张卡显示第 1 张卡的显存"。
-    ///   注册表里每个显示适配器都单独记着自己的真实显存容量, 可以当作"这张卡到底有多少显存"的权威值:
-    ///     1) 用它判断厂商通道是不是在报告别的卡 (容量对不上就是串了)
+    ///   注册表里每个显示适配器都单独记着自己的显存容量, 可以当作"这张卡到底有多少显存"的参照:
+    ///     1) 用它判断厂商通道是不是在报告别的卡 (容量命中另一块适配器就是串了)
     ///     2) 串了的时候用它当正确的分母
     ///
     /// 数据来源:
     ///   HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\&lt;NNNN&gt;
     ///     DriverDesc                      -> 适配器名 (与 LHM 的 hw.Name 对得上)
-    ///     HardwareInformation.qwMemorySize -> 显存字节数 (QWORD)
+    ///     HardwareInformation.qwMemorySize -> 显存字节数 (QWORD, 真机实测为 Int64)
+    ///
+    /// 注意: 注册表记的是"驱动可见容量", 不一定等于物理容量
+    ///   (实测 Intel Arc A770 = 16256 MB, 物理 16 GB = 16384 MB, 差 0.78%),
+    ///   所以判定时必须配"交叉证据", 不能只看"对不上"。
     /// </summary>
     public static class GpuVramCapacity
     {
@@ -407,7 +411,8 @@ namespace LiteMonitor.src.SystemServices
         private const long MinPlausibleBytes = 64L * 1024 * 1024;   // 小于 64MB 的当噪声丢掉
 
         private static readonly object _lock = new object();
-        private static Dictionary<string, float> _byNormalizedName;   // 归一化名 -> 容量 (MB)
+        private static Dictionary<string, float> _byNormalizedName = new(StringComparer.Ordinal);   // 归一化名 -> 容量 (MB)
+        private static List<float> _allTotalsMB = new();                                          // 全部适配器的容量 (MB)
         private static bool _loaded;
 
         /// <summary>
@@ -444,18 +449,35 @@ namespace LiteMonitor.src.SystemServices
             }
         }
 
+        /// <summary>
+        /// 注册表里**全部**显示适配器的显存容量 (MB)。
+        /// 用来做"串卡交叉证据": 厂商通道报的容量如果命中了这里的某个值,
+        /// 而且那个值不是本卡自己的容量, 就说明它在报告别的卡。
+        /// 必须取全部适配器 (而不是只取被监控的卡), 否则"只监控 1 张卡且正好选到串的那张"
+        /// 会因为"另一张卡不在监控集合里"而失去证据。
+        /// </summary>
+        public static IReadOnlyList<float> GetAllTotalsMB()
+        {
+            EnsureLoaded();
+            lock (_lock)
+            {
+                return _allTotalsMB.ToArray();
+            }
+        }
+
         private static void EnsureLoaded()
         {
             lock (_lock)
             {
                 if (_loaded) return;
                 _loaded = true;
-                _byNormalizedName = new Dictionary<string, float>(StringComparer.Ordinal);
+                _byNormalizedName.Clear();
+                _allTotalsMB.Clear();
 
                 try
                 {
                     using RegistryKey root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
-                    using RegistryKey classKey = root.OpenSubKey(ClassSubKey);
+                    using RegistryKey? classKey = root.OpenSubKey(ClassSubKey);
                     if (classKey == null) return;
 
                     // 先按名字收集所有候选 (同型号可能有多条)
@@ -470,7 +492,7 @@ namespace LiteMonitor.src.SystemServices
                         //   免得一个打不开的子键把整张表都废掉 (外层 catch 会清空全部结果)。
                         if (!IsAllDigits(subName)) continue;
 
-                        RegistryKey adapterKey;
+                        RegistryKey? adapterKey;
                         try
                         {
                             adapterKey = classKey.OpenSubKey(subName);
@@ -483,8 +505,8 @@ namespace LiteMonitor.src.SystemServices
 
                         using (adapterKey)
                         {
-                            string desc = adapterKey.GetValue("DriverDesc") as string;
-                            object sizeObj = adapterKey.GetValue("HardwareInformation.qwMemorySize");
+                            string? desc = adapterKey.GetValue("DriverDesc") as string;
+                            object? sizeObj = adapterKey.GetValue("HardwareInformation.qwMemorySize");
                             if (string.IsNullOrWhiteSpace(desc) || sizeObj == null) continue;
 
                             if (!TryToInt64(sizeObj, out long bytes) || bytes < MinPlausibleBytes) continue;
@@ -493,8 +515,9 @@ namespace LiteMonitor.src.SystemServices
                             if (norm.Length == 0) continue;
 
                             float mb = (float)(bytes / (1024.0 * 1024.0));
+                            _allTotalsMB.Add(mb);
 
-                            if (!candidates.TryGetValue(norm, out List<float> list))
+                            if (!candidates.TryGetValue(norm, out List<float>? list))
                             {
                                 list = new List<float>();
                                 candidates[norm] = list;
@@ -515,6 +538,7 @@ namespace LiteMonitor.src.SystemServices
                 {
                     // 读不到就当没有, 判定规则会退化成"厂商通道可信", 即维持旧行为
                     _byNormalizedName = new Dictionary<string, float>(StringComparer.Ordinal);
+                    _allTotalsMB = new List<float>();
                 }
             }
         }
@@ -534,17 +558,27 @@ namespace LiteMonitor.src.SystemServices
         {
             switch (value)
             {
-                case long l: result = l; return true;
-                case int i: result = i; return true;
-                case uint ui: result = ui; return true;
-                case ulong ul when ul <= long.MaxValue: result = (long)ul; return true;
+                case long l:
+                    result = l;
+                    return true;
+                case int i:
+                    result = i;
+                    return true;
+                case uint ui:
+                    result = ui;
+                    return true;
+                case ulong ul when ul <= long.MaxValue:
+                    result = (long)ul;
+                    return true;
                 case byte[] bytes when bytes.Length == 8:
                     result = BitConverter.ToInt64(bytes, 0);
                     return true;
                 default:
-                    result = 0;
-                    return long.TryParse(Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture),
-                        System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out result);
+                    return long.TryParse(
+                        Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture),
+                        System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out result);
             }
         }
     }
@@ -639,20 +673,21 @@ if (existingIsD3D && !newIsD3D)
         ///
         /// ★★★ [显存修复] D3D 通道单独建 Key ★★★
         /// D3D 通道按适配器 (adapter) 统计, 每张卡各读各的, 不会串卡;
-        /// 厂商通道 (NVAPI / ADL) 在 LHM 0.9.6 的 NVIDIA 实现上会被"全局化", 多卡时串卡。
+        /// 厂商通道 (NVAPI / ADL) 在 LHM 0.9.6 的 NVIDIA 实现上会被"全局化", 多卡时多张卡拿到同一份数据。
         /// 所以这里把 D3D 专用显存拆到独立 Key, 由取值层 (GpuVramSource) 按规则择一,
-        /// 而不是像以前那样让厂商值把 D3D 值顶掉。
+        /// 而不是像以前那样让厂商值把 D3D 值顶掉 (SensorMap 的冲突规则是"厂商优先")。
         /// </summary>
         public static string? MatchGpu(string name, SensorType sensorType, bool preferShared)
         {
-            if (s_isLoad(sensorType) && (Has(name, "core") || Has(name, "d3d 3d"))) return "GPU.Load";
-            if (s_isTemp(sensorType) && (Has(name, "core") || Has(name, "hot spot") || Has(name, "soc") || Has(name, "vr"))) return "GPU.Temp";
+            if (sensorType == SensorType.Load && (Has(name, "core") || Has(name, "d3d 3d"))) return "GPU.Load";
+            if (sensorType == SensorType.Temperature && (Has(name, "core") || Has(name, "hot spot") || Has(name, "soc") || Has(name, "vr"))) return "GPU.Temp";
 
             // ★ [显存修复] D3D 专用显存 -> 独立 Key
             //   注意: 这里只拦 "D3D Dedicated Memory *"。核显的 "D3D Shared Memory *"
-            //   仍然要走下面的通用分支 (它就是核显的 GPU.VRAM.Used 来源), 不能一起拦掉。
-            bool isD3DSensor = Has(name, "d3d");
-            if (sensorType == SensorType.SmallData && isD3DSensor && Has(name, "dedicated"))
+            //   仍然要走下面的通用分支 (它就是核显 GPU.VRAM.Used 的来源), 不能一起拦掉,
+            //   否则核显的显存映射会整个消失。
+            bool isD3DDedicated = Has(name, "d3d") && Has(name, "dedicated");
+            if (sensorType == SensorType.SmallData && isD3DDedicated)
             {
                 if (Has(name, "used")) return "GPU.VRAM.D3D.Used";
                 if (Has(name, "total")) return "GPU.VRAM.D3D.Total";
@@ -660,6 +695,7 @@ if (existingIsD3D && !newIsD3D)
             }
 
             // VRAM Logic (简化且准确)
+            // 1. 根据硬件规则判断是否应该优先找共享内存 (核显)
             if (sensorType == SensorType.SmallData
                 && (Has(name, "memory") || Has(name, "dedicated") || Has(name, "shared")))
             {
@@ -683,7 +719,7 @@ if (existingIsD3D && !newIsD3D)
                 {
                     // Discrete: Accept Dedicated or Generic Memory (Block Shared)
                     // ★ D3D 专用的已经在上面单独建 Key 了, 这里跳过, 避免被当成厂商口径
-                    if (!isShared && !isD3DSensor)
+                    if (!isShared && !isD3DDedicated)
                     {
                         if (Has(name, "used")) return "GPU.VRAM.Used";
                         if (Has(name, "total")) return "GPU.VRAM.Total";
@@ -691,7 +727,9 @@ if (existingIsD3D && !newIsD3D)
                 }
             }
 
-            if (sensorType == SensorType.Load && Has(name, "memory")) return "GPU.VRAM.Load";
+            // 显存占用率: 只认 "GPU Memory", 不要 "GPU Memory Controller" (那是显存控制器利用率, 不是占用率)
+            if (sensorType == SensorType.Load && Has(name, "memory") && !Has(name, "controller"))
+                return "GPU.VRAM.Load";
 
             return null;
         }
@@ -732,6 +770,7 @@ fix(gpu): 显存匹配拆出 D3D 通道独立 Key，避免被厂商通道顶掉
 
 ```csharp
 using System;
+using System.Collections.Generic;
 
 namespace LiteMonitor.src.SystemServices
 {
@@ -743,10 +782,12 @@ namespace LiteMonitor.src.SystemServices
     ///   D3D 通道按适配器统计, 每卡独立, 但口径与厂商通道略有差异 (且不含纯计算型占用)。
     ///   因此不能无条件切到 D3D —— 单卡场景下厂商通道是对的, 切过去反而丢失 CUDA/ROCm 独占显存的可见性。
     ///
-    /// 判定依据:
-    ///   拿注册表里"这张卡真实的显存容量"和"厂商通道报的容量"比。
-    ///   对不上 ⇒ 厂商通道在报告别的卡 ⇒ 换 D3D 通道;
-    ///   对得上   ⇒ 厂商通道可信 ⇒ 维持原样 (AMD / Intel 走的就是这条路, 行为零变化)。
+    /// 判定依据 ("串卡"要同时满足两条):
+    ///   1) 厂商通道报的容量与本卡真实容量对不上;
+    ///   2) 且这个报出来的容量**命中了系统里另一块适配器的容量**。
+    /// 第 2 条是必须的: 注册表记的是驱动可见容量, 未必等于物理容量
+    ///   (实测 Intel Arc A770 = 16256 MB vs 物理 16384 MB, 差 0.78%),
+    ///   只看第 1 条会把这类卡误判成串卡, 白白丢掉 CUDA/ROCm 可见性。
     /// </summary>
     public static class GpuVramSource
     {
@@ -759,21 +800,43 @@ namespace LiteMonitor.src.SystemServices
         /// </summary>
         public const float MinPlausibleTotalMB = 512f;
 
+        /// <summary>两个容量是否算"同一个"。</summary>
+        public static bool SameCapacity(float a, float b)
+        {
+            float diff = Math.Abs(a - b);
+            float tolerance = Math.Max(AbsToleranceMB, Math.Max(a, b) * RelTolerance);
+            return diff <= tolerance;
+        }
+
         /// <summary>
         /// 厂商通道报的容量是否与该卡真实容量不符 (即厂商通道在报告别的卡)。
         /// 任何一项缺失 / 不可信都判为"可信" —— 缺证据时维持旧行为。
         /// </summary>
-        public static bool IsVendorChannelForeign(float? vendorTotalMB, float? realTotalMB)
+        public static bool IsVendorChannelForeign(
+            float? vendorTotalMB,
+            float? realTotalMB,
+            IReadOnlyList<float> allAdapterTotalsMB)
         {
             if (!vendorTotalMB.HasValue || !realTotalMB.HasValue) return false;
             if (vendorTotalMB.Value <= 0 || realTotalMB.Value <= 0) return false;
 
-            // ★ 容量太小 -> 多半是核显的 UMA 窗口, 不参与判定
+            // ★ 真实容量太小 -> 多半是核显的 UMA 窗口, 不参与判定
             if (realTotalMB.Value < MinPlausibleTotalMB) return false;
 
-            float diff = Math.Abs(vendorTotalMB.Value - realTotalMB.Value);
-            float tolerance = Math.Max(AbsToleranceMB, realTotalMB.Value * RelTolerance);
-            return diff > tolerance;
+            // 本卡对得上 -> 可信
+            if (SameCapacity(vendorTotalMB.Value, realTotalMB.Value)) return false;
+
+            // 对不上 -> 必须命中"另一块适配器"的容量才算串卡。
+            // (本卡自己的容量已经排除在外了: 上面 SameCapacity 为 false, 所以它命中不了)
+            if (allAdapterTotalsMB == null) return false;
+            for (int i = 0; i < allAdapterTotalsMB.Count; i++)
+            {
+                float t = allAdapterTotalsMB[i];
+                if (t <= 0) continue;
+                if (SameCapacity(vendorTotalMB.Value, t)) return true;
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -781,23 +844,28 @@ namespace LiteMonitor.src.SystemServices
         /// useD3D 由调用方决定 (它要先把 G1/G2/G3 三道守卫过一遍)。
         /// </summary>
         public static (float? used, float? total) Select(
-            float? vendorUsedMB, float? vendorTotalMB,
-            float? d3dUsedMB, float? d3dTotalMB,
+            float? vendorUsedMB,
+            float? vendorTotalMB,
+            float? d3dUsedMB,
+            float? d3dTotalMB,
             float? realTotalMB,
             bool useD3D)
         {
             if (useD3D)
             {
                 // 厂商通道在报告别的卡 -> 改用 D3D 通道, 容量用注册表真值
-                float? used = d3dUsedMB ?? vendorUsedMB;
-                float? total = d3dTotalMB ?? realTotalMB ?? vendorTotalMB;
+                // ★ D3D 通道缺失时宁可无值: 绝不能拿"别的卡的 used"去除"本卡的 total",
+                //   那样会算出 6495/20480 = 31.7% 这种又错又怪的值, 比原来更让人误解。
+                if (!d3dUsedMB.HasValue) return (null, realTotalMB ?? d3dTotalMB ?? vendorTotalMB);
+                float? used = d3dUsedMB;
+                float? total = realTotalMB ?? d3dTotalMB ?? vendorTotalMB;
                 return (used, total);
             }
 
             // 厂商通道可信 -> 维持原口径, D3D 只作兜底
-            float? used2 = vendorUsedMB ?? d3dUsedMB;
-            float? total2 = vendorTotalMB ?? d3dTotalMB ?? realTotalMB;
-            return (used2, total2);
+            float? usedNormal = vendorUsedMB ?? d3dUsedMB;
+            float? totalNormal = vendorTotalMB ?? d3dTotalMB ?? realTotalMB;
+            return (usedNormal, totalNormal);
         }
     }
 }
@@ -813,7 +881,7 @@ namespace LiteMonitor.src.SystemServices
         ///
         /// 用途: 显存串卡判定只对独显生效。
         ///   核显在注册表里记的是 UMA 窗口大小, 与它实际使用的共享显存上限本来就不该相等,
-        ///   拿它当基准会把核显误判成"串卡", 然后把核显切到几乎没有的 D3D 专用显存口径,
+        ///   拿它当基准会把核显误判成"串卡", 再切到几乎没有的 D3D 专用显存口径,
         ///   结果核显显存恒显 0% —— 比原 bug 更糟。
         /// </summary>
         public static bool UsesDedicatedVramName(string name)
@@ -827,7 +895,7 @@ namespace LiteMonitor.src.SystemServices
             if (Has(name, "AMD"))
             {
                 return !name.Equals("AMD Radeon(TM) Graphics", StringComparison.OrdinalIgnoreCase)
-                    && !name.Equals("AMD Radeon Graphics", StringComparison.OrdinalIgnoreCase);
+                       && !name.Equals("AMD Radeon Graphics", StringComparison.OrdinalIgnoreCase);
             }
 
             // NVIDIA: 一律按独显处理
@@ -870,6 +938,10 @@ feat(gpu): 新增显存数据来源判定逻辑
 **现状代码**（`src/System/HardwareServices/HardwareValueProvider.cs:531-565`）：
 
 ```csharp
+        /// <summary>
+        /// 计算显存占用百分比。
+        /// key 形如 "GPU.VRAM" (旧) 或 "GPU.1.VRAM" (多卡), 由此派生出 Used / Total 子 Key。
+        /// </summary>
         private float? GetGpuVramPercent(string key)
         {
             // "GPU.VRAM" -> "GPU." ; "GPU.1.VRAM" -> "GPU.1."
@@ -917,8 +989,8 @@ feat(gpu): 新增显存数据来源判定逻辑
         /// ★★★ [显存修复] 双通道择源 ★★★
         /// 厂商通道 (NVAPI/ADL) 在 LHM 0.9.6 的 NVIDIA 实现上会被"全局化", 多卡时多张卡拿到同一份数据;
         /// D3D 通道按适配器统计, 每卡独立。
-        /// 判定交给 GpuVramSource: 厂商通道报的容量与该卡真实容量 (注册表) 对不上 ⇒ 换 D3D 通道。
-        /// 对得上 ⇒ 维持厂商通道 (AMD / Intel / 单卡场景行为完全不变)。
+        /// 判定交给 GpuVramSource: 厂商通道报的容量命中了"另一块适配器"的容量 ⇒ 它在报告别的卡
+        /// ⇒ 换 D3D 通道。没有证据 ⇒ 维持厂商通道 (单卡 / AMD / Intel 场景行为完全不变)。
         /// </summary>
         private float? GetGpuVramPercent(string key)
         {
@@ -926,26 +998,28 @@ feat(gpu): 新增显存数据来源判定逻辑
             string prefix = key.Substring(0, key.Length - "VRAM".Length);
             string cardKey = prefix.TrimEnd('.');        // "GPU" / "GPU.1"
 
-            // --- 1. 厂商通道 ---
+            // --- 1. 厂商通道 (NVAPI / ADL) ---
             float? usedVendor  = ToMB(GetValue(prefix + "VRAM.Used"));
             float? totalVendor = ToMB(GetValue(prefix + "VRAM.Total"));
 
-            // --- 2. D3D 通道 (每卡独立) ---
+            // --- 2. D3D 通道 (按适配器统计, 每卡独立) ---
             float? usedD3D  = ToMB(GetValue(prefix + "VRAM.D3D.Used"));
             float? totalD3D = ToMB(GetValue(prefix + "VRAM.D3D.Total"));
 
-            // --- 3. 该卡真实容量 (注册表) ---
-            float? totalReal = GpuVramCapacity.GetTotalMB(GetGpuFullName(cardKey));
+            // --- 3. 该卡真实容量 (注册表) + 全部适配器容量 (串卡交叉证据) ---
+            string fullName = GetGpuFullName(cardKey);
+            float? totalReal = GpuVramCapacity.GetTotalMB(fullName);
+            IReadOnlyList<float> allTotals = GpuVramCapacity.GetAllTotalsMB();
 
             // --- 4. 守卫: 这张卡有没有资格参与"串卡"判定 ---
-            // 核显一律不参与 —— 注册表里核显记的是 UMA 窗口大小, 与共享显存上限本来就不该相等,
-            // 拿它当基准会把核显误判成串卡, 再切到几乎没有的 D3D 专用显存口径, 核显显存会恒显 0%。
-            string fullName = GetGpuFullName(cardKey);
+            // 核显一律不参与: 注册表里核显记的是 UMA 窗口大小, 与它实际用的共享显存上限
+            // 本来就不该相等, 拿它当基准会把核显误判成串卡, 再切到几乎没有的 D3D 专用显存口径,
+            // 结果核显显存恒显 0% —— 比原 bug 更糟。
             bool eligible = HardwareRules.UsesDedicatedVramName(fullName)
                             && !IsSharedMemoryCard(prefix);
 
             // --- 5. 择源 ---
-            bool useD3D = eligible && GpuVramSource.IsVendorChannelForeign(totalVendor, totalReal);
+            bool useD3D = eligible && GpuVramSource.IsVendorChannelForeign(totalVendor, totalReal, allTotals);
             var (used, total) = GpuVramSource.Select(
                 usedVendor, totalVendor, usedD3D, totalD3D, totalReal, useD3D);
 
@@ -961,10 +1035,15 @@ feat(gpu): 新增显存数据来源判定逻辑
                 }
 
                 // ★★★ [多显卡] 每张卡单独记录自己的显存总容量 ★★★
-                // 写的是"校正后"的容量 (串卡时用注册表真值), 容量模式显示才会对
-                if (gb > 0 && gb < 1024 && !Settings.DetectedGpuVramTotalGBByKey.ContainsKey(cardKey))
+                // 写的是"校正后"的容量 (串卡时用注册表真值), 容量模式显示才会对。
+                // 不能先到先得: 择源结果会随"被监控卡集合"变化, 值变了必须覆盖。
+                if (gb > 0 && gb < 1024)
                 {
-                    Settings.DetectedGpuVramTotalGBByKey[cardKey] = gb;
+                    if (!Settings.DetectedGpuVramTotalGBByKey.TryGetValue(cardKey, out float oldGb)
+                        || Math.Abs(oldGb - gb) > 0.01f)
+                    {
+                        Settings.DetectedGpuVramTotalGBByKey[cardKey] = gb;
+                    }
                 }
 
                 return used / total * 100f;
@@ -973,7 +1052,6 @@ feat(gpu): 新增显存数据来源判定逻辑
             if (_manualSensorCache.TryGetValue(prefix + "VRAM.Load", out var s) && s.Value.HasValue) return s.Value;
             return null;
         }
-
         /// <summary>
         /// 统一把传感器的显存数值换算成 MB。
         /// LHM 0.9.x 报 MB; 换新版 LHM 报字节。10485760 MB (= 10 TB) 实际不可能出现,
@@ -984,7 +1062,6 @@ feat(gpu): 新增显存数据来源判定逻辑
             if (!value.HasValue) return null;
             return value.Value > 10485760f ? value.Value / 1048576f : value.Value;
         }
-
         /// <summary>
         /// 该卡的显存是否走"共享显存"口径 (核显)。
         /// 判据: 它映射到的 LHM 传感器名里带 "Shared" (核显是 "D3D Shared Memory *")。
@@ -1007,7 +1084,6 @@ feat(gpu): 新增显存数据来源判定逻辑
 
             return false;
         }
-
         /// <summary>
         /// 取 "GPU" / "GPU.1" 对应显卡的全名, 供注册表按名字匹配真实显存容量。
         /// </summary>
@@ -1102,8 +1178,18 @@ using Xunit;
 
 namespace LiteMonitor.Tests
 {
+    /// <summary>
+    /// 显存串卡修复的回归测试。
+    ///
+    /// 本测试工程只有 xunit, 没有 Mock 框架, 所以全部用例都只测纯函数
+    /// (SensorMatcher.MatchGpu / GpuVramSource / HardwareRules.UsesDedicatedVramName),
+    /// 不构造 IHardware / ISensor 桩。
+    /// </summary>
     public class GpuVramTests
     {
+        // 模拟注册表里的适配器容量集合: 3080 Ti = 12288MB, 3080 = 20480MB
+        private static readonly float[] RealAdapterTotals = { 12288f, 20480f };
+
         // ---------- GpuVramCapacity.NormalizeName ----------
 
         [Theory]
@@ -1129,27 +1215,84 @@ namespace LiteMonitor.Tests
             Assert.Null(GpuVramCapacity.GetTotalMB("根本不存在的显卡型号 XXXX"));
         }
 
-        // ---------- GpuVramSource.IsVendorChannelForeign ----------
+        [Fact]
+        public void GetTotalMB_空输入返回null()
+        {
+            Assert.Null(GpuVramCapacity.GetTotalMB(""));
+            Assert.Null(GpuVramCapacity.GetTotalMB(null));
+        }
 
         [Theory]
-        [InlineData(12288f, 20480f, true)]     // 3080 串卡: 报 12GB, 真实 20GB
-        [InlineData(12288f, 12288f, false)]    // 3080 Ti 正常
-        [InlineData(20480f, 20480f, false)]
-        [InlineData(20470f, 20480f, false)]    // 10MB 差, 在 1% 相对容差(204MB)内
-        [InlineData(20250f, 20480f, true)]     // 230MB 差, 超出容差
-        [InlineData(8192f, 512f, false)]       // 真实容量低于 512MB 下限 -> 核显 UMA 窗口, 不判定
-        public void IsVendorChannelForeign_容量对不上才算串卡(float vendor, float real, bool expected)
+        [InlineData("NVIDIA GeForce RTX 3080", 20480f)]
+        [InlineData("NVIDIA GeForce RTX 3080 Ti", 12288f)]
+        public void GetTotalMB_本机实测的独显容量(string name, float expectedMB)
         {
-            Assert.Equal(expected, GpuVramSource.IsVendorChannelForeign(vendor, real));
+            float? actual = GpuVramCapacity.GetTotalMB(name);
+            if (!actual.HasValue) return;   // 别的机器上没有这张卡, 跳过
+            Assert.Equal(expectedMB, actual.Value, 1);
+        }
+
+        [Fact]
+        public void GetAllTotalsMB_读到的容量都是合理量级()
+        {
+            var all = GpuVramCapacity.GetAllTotalsMB();
+            Assert.NotNull(all);
+            if (all.Count == 0) return;     // 受限环境读不到, 跳过
+            Assert.Contains(all, v => v >= 512f);
+        }
+
+        // ---------- GpuVramSource.SameCapacity ----------
+
+        [Theory]
+        [InlineData(12288f, 12288f, true)]
+        [InlineData(20480f, 20480f, true)]
+        [InlineData(20470f, 20480f, true)]   // 10MB 差, 在 1% 相对容差(204MB)内
+        [InlineData(20250f, 20480f, false)]  // 230MB 差, 超出容差
+        [InlineData(12288f, 20480f, false)]
+        public void SameCapacity_容差内算同一个(float a, float b, bool expected)
+        {
+            Assert.Equal(expected, GpuVramSource.SameCapacity(a, b));
+        }
+
+        // ---------- GpuVramSource.IsVendorChannelForeign ----------
+
+        [Fact]
+        public void IsVendorChannelForeign_厂商报的容量命中另一块卡就是串卡()
+        {
+            // 3080 这张卡: 厂商报 12288 (其实是 Ti 的容量), 注册表真值 20480
+            Assert.True(GpuVramSource.IsVendorChannelForeign(12288f, 20480f, RealAdapterTotals));
+        }
+
+        [Fact]
+        public void IsVendorChannelForeign_本卡对得上就判为可信()
+        {
+            Assert.False(GpuVramSource.IsVendorChannelForeign(12288f, 12288f, RealAdapterTotals));
+            Assert.False(GpuVramSource.IsVendorChannelForeign(20480f, 20480f, RealAdapterTotals));
+        }
+
+        [Fact]
+        public void IsVendorChannelForeign_对不上但命中不了别的卡就不判定()
+        {
+            // 驱动可见容量 != 物理容量时 (实测 Arc A770: 16256 vs 16384) 会走到这里,
+            // 此时厂商报的 16384 命中不了系统里任何另一块适配器 -> 不能判定成串卡
+            Assert.False(GpuVramSource.IsVendorChannelForeign(16384f, 16256f, RealAdapterTotals));
         }
 
         [Fact]
         public void IsVendorChannelForeign_缺证据时判为可信()
         {
-            Assert.False(GpuVramSource.IsVendorChannelForeign(null, 20480f));
-            Assert.False(GpuVramSource.IsVendorChannelForeign(12288f, null));
-            Assert.False(GpuVramSource.IsVendorChannelForeign(null, null));
-            Assert.False(GpuVramSource.IsVendorChannelForeign(0f, 20480f));
+            Assert.False(GpuVramSource.IsVendorChannelForeign(null, 20480f, RealAdapterTotals));
+            Assert.False(GpuVramSource.IsVendorChannelForeign(12288f, null, RealAdapterTotals));
+            Assert.False(GpuVramSource.IsVendorChannelForeign(null, null, RealAdapterTotals));
+            Assert.False(GpuVramSource.IsVendorChannelForeign(0f, 20480f, RealAdapterTotals));
+            Assert.False(GpuVramSource.IsVendorChannelForeign(12288f, 20480f, null));
+        }
+
+        [Fact]
+        public void IsVendorChannelForeign_真实容量低于下限不判定()
+        {
+            // 核显的 UMA 窗口 (几百 MB) 不能拿来当基准
+            Assert.False(GpuVramSource.IsVendorChannelForeign(8192f, 512f, RealAdapterTotals));
         }
 
         // ---------- GpuVramSource.Select ----------
@@ -1165,6 +1308,20 @@ namespace LiteMonitor.Tests
 
             Assert.Equal(4.1f, used.Value, 3);      // 用 D3D 的 used
             Assert.Equal(20480f, total.Value, 3);    // 用注册表真值
+        }
+
+        [Fact]
+        public void Select_厂商串卡但D3D缺失时不混算()
+        {
+            // 绝不能拿"别的卡的 used"(6495) 去除"本卡的 total"(20480) -> 31.7% 这种又错又怪的值
+            var (used, total) = GpuVramSource.Select(
+                vendorUsedMB: 6495f, vendorTotalMB: 12288f,
+                d3dUsedMB: null, d3dTotalMB: null,
+                realTotalMB: 20480f,
+                useD3D: true);
+
+            Assert.False(used.HasValue);
+            Assert.Equal(20480f, total.Value, 3);
         }
 
         [Fact]
@@ -1197,11 +1354,13 @@ namespace LiteMonitor.Tests
 
         [Theory]
         [InlineData("NVIDIA GeForce RTX 3080", true)]
+        [InlineData("NVIDIA GeForce RTX 3080 Ti", true)]
         [InlineData("AMD Radeon RX 7900 XTX", true)]
         [InlineData("Intel(R) Arc(TM) A770 Graphics", true)]
         [InlineData("Intel(R) UHD Graphics 770", false)]     // 核显
         [InlineData("AMD Radeon(TM) Graphics", false)]        // 核显
         [InlineData("", false)]
+        [InlineData(null, false)]
         public void UsesDedicatedVramName_只有独显才参与串卡判定(string name, bool expected)
         {
             Assert.Equal(expected, HardwareRules.UsesDedicatedVramName(name));
@@ -1215,7 +1374,8 @@ namespace LiteMonitor.Tests
         [InlineData("D3D Dedicated Memory Free", "GPU.VRAM.D3D.Free")]
         public void MatchGpu_D3D专用显存走独立Key(string sensorName, string expected)
         {
-            Assert.Equal(expected, SensorMatcher.MatchGpu(sensorName, LibreHardwareMonitor.Hardware.SensorType.SmallData, false));
+            Assert.Equal(expected,
+                SensorMatcher.MatchGpu(sensorName, LibreHardwareMonitor.Hardware.SensorType.SmallData, false));
         }
 
         [Theory]
@@ -1223,14 +1383,19 @@ namespace LiteMonitor.Tests
         [InlineData("GPU Memory Total", "GPU.VRAM.Total")]
         public void MatchGpu_厂商显存Key不变(string sensorName, string expected)
         {
-            Assert.Equal(expected, SensorMatcher.MatchGpu(sensorName, LibreHardwareMonitor.Hardware.SensorType.SmallData, false));
+            Assert.Equal(expected,
+                SensorMatcher.MatchGpu(sensorName, LibreHardwareMonitor.Hardware.SensorType.SmallData, false));
         }
 
         [Fact]
         public void MatchGpu_核显仍走共享显存()
         {
+            // ★ 这条最关键: 核显的显存**只有** "D3D Shared Memory *" 一个来源,
+            //   一旦被通用分支的 D3D 排除条件误伤, 核显的显存映射会整个消失。
             Assert.Equal("GPU.VRAM.Used",
                 SensorMatcher.MatchGpu("D3D Shared Memory Used", LibreHardwareMonitor.Hardware.SensorType.SmallData, true));
+            Assert.Equal("GPU.VRAM.Total",
+                SensorMatcher.MatchGpu("D3D Shared Memory Total", LibreHardwareMonitor.Hardware.SensorType.SmallData, true));
         }
 
         [Fact]
@@ -1240,6 +1405,15 @@ namespace LiteMonitor.Tests
                 SensorMatcher.MatchGpu("D3D 3D", LibreHardwareMonitor.Hardware.SensorType.Load, false));
             Assert.Equal("GPU.Temp",
                 SensorMatcher.MatchGpu("GPU Core", LibreHardwareMonitor.Hardware.SensorType.Temperature, false));
+        }
+
+        [Fact]
+        public void MatchGpu_显存占用率不再误用显存控制器利用率()
+        {
+            Assert.Equal("GPU.VRAM.Load",
+                SensorMatcher.MatchGpu("GPU Memory", LibreHardwareMonitor.Hardware.SensorType.Load, false));
+            Assert.Null(
+                SensorMatcher.MatchGpu("GPU Memory Controller", LibreHardwareMonitor.Hardware.SensorType.Load, false));
         }
     }
 }
