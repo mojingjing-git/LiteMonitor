@@ -3175,7 +3175,8 @@ MainForm._cfg  = Settings.Load()          // MainForm_Transparent.cs:16 —— l
         private int _detectedGpuCount = 0;
 
         // ★「监控显卡数量」下拉的句柄: 构造时拿不到真实卡数, 拿到之后再收窄选项 ★
-        private LiteComboBox _cbGpuCount;
+        //   (CreateSourceCard() 在构造函数里就会被调用, 编译器看不到这条赋值链, 故显式抑制)
+        private LiteComboBox _cbGpuCount = null!;
 
         // ★ 程序化改动下拉选项时抑制回调 ★
         //   真正会触发 SelectedIndexChanged 的是后面的 `SelectedIndex = cur - 1` 赋值;
@@ -3196,12 +3197,15 @@ MainForm._cfg  = Settings.Load()          // MainForm_Transparent.cs:16 —— l
 之后插入两行:
 
 ```csharp
-            // ★ 实际检测到的显卡数量 (用于「监控显卡数量」下拉的上限) ★
-            _detectedGpuCount = taskGpus.Result?.Count ?? 0;
+                // ★ 实际检测到的显卡数量 (用于「监控显卡数量」下拉的上限) ★
+                //   用局部变量承接: 直接写 `taskGpus.Result?.Count` 会把 Result 的可空状态
+                //   污染到下面的 FillGpuSync(_cbGpu, taskGpus.Result, ...) 调用上 (CS8604)。
+                var detectedGpus = taskGpus.Result;
+                _detectedGpuCount = detectedGpus?.Count ?? 0;
 
-            // ★ 真实卡数拿到了, 收窄「监控显卡数量」下拉的选项 ★
-            // (构造时只能给满 1..8, 因为此刻硬件还没枚举完)
-            RefreshGpuCountOptions();
+                // ★ 真实卡数拿到了, 收窄「监控显卡数量」下拉的选项 ★
+                // (构造时只能给满 1..8, 因为此刻硬件还没枚举完)
+                RefreshGpuCountOptions();
 ```
 
 再在 `SystemHardwarPage` 类里 (与 `PopulateAsyncData` 同级) 插入这个方法:
