@@ -16,16 +16,30 @@
 - 不得修改 `resources/plugins/` 下 13 个内置插件 JSON 的任何内容。
 - 不得修改 `resources/themes/`、`resources/lang/` 中除新增菜单文案以外的任何现有条目。
 - 提交粒度：**每个 Task 结束提交一次**，提交信息用中文正文 + 英文 type 前缀（如 `feat(gpu): ...`）。
-- 全部分支工作基于 `feat/multi-gpu` 分支，从 `master`（`169e90a`）切出。
+- 全部分支工作基于 `feat/multi-gpu` 分支，从 `master`（含计划提交 `81bd139`）切出。
 - 复用既有锁策略：硬件层持 `_lock`（`HardwareMonitor._lock`），UI 线程取值走 `Monitor.TryEnter(10ms)`，**不得**在 UI 线程发起阻塞式硬件调用。
+  - ⚠️ `SensorMap` 另有自己的私有 `_lock`（`SensorMap.cs:37`），与 `HardwareMonitor._lock` **不是同一个对象**。获取顺序始终是 `HardwareMonitor._lock` → `SensorMap._lock`，不构成死锁；但跨这两个锁访问同一份状态时必须走「整体替换」而不是「边改边读」（见 Task 2 / Task 6 的 `GpuRegistry.ReplaceAll`）。
+
 - 注释语言：与被改文件保持一致（`src/System/**` 用中文，`src/Core/**` 中英皆可），新增文件统一中文注释。
+- **监控显卡数量必须按实际检测到的显卡数夹紧**（见 Task 4 / Task 5.5 / Task 12.3），否则 2 卡机器上选 8 会凭空多出 6 组永远没有数据的空白监控项。
+- **带序号 Key 的语言包兜底必须归一化**（见 Task 7.5）：`LanguageManager.T("Items." + Key)` 遇到 `GPU.0.Load` 会回退成字面量 `GPU.0.Load`，凡是拼 `"Items." + Key` / `"Short." + Key` 的地方都要先过 `GpuKey.ToBaseKey`。
+- **设置页只写 `MonitoredGpuCount`，不直接改 `MonitorItems`**（见 Task 13）：监控项统一由 Task 5.5 在保存路径生成，绕开 draft/live 机制。
+- **行尾符**：仓库里的 `src/**` 源文件是 **CRLF**，而本计划文档是 **LF**。执行"把 A 替换为 B"时若直接用字符串 `Replace`，会因为 `\r\n` 与 `\n` 不一致而**匹配失败**。请先统一行尾（读取时把 `\r\n` 归一为 `\n`，写回时按目标文件的原样写回），或改用按行匹配。
+
+
 
 ## 仓库与工具链现状（已就绪，无需重复准备）
 
 - Fork: `https://github.com/mojingjing-git/LiteMonitor`（上游 `Diorser/LiteMonitor`）
 - 工作副本: `G:\TOOL\LiteMonitor-fork`，`origin`=fork，`upstream`=上游
 - SDK: `G:\TOOL\dotnet-sdk\dotnet.exe`（8.0.426），命令前缀见下方「命令速查」
-- 基线编译已通过（Release，0 错误 0 警告）
+- 基线编译已通过（Release，0 错误；**基线本身约有 227 条既有警告**，本改造不要求清零，只要不新增错误即可）
+  - 按本计划改完后，警告数会从 227 升到 **230~233**（只改到 Task 5 时是 230，改完全部 Task 是 233）——
+    新增的几条全是新代码的可空性提示（`GpuItemSync.cs` 3×CS8601、`GpuRegistry.cs` 1×CS8625、
+    `SystemHardwarPage.cs` 1×CS8618 + 1×CS8604），**错误数仍是 0**。看到 230+ 不要以为是出了问题。
+  - ⚠️ 用 `grep ': warning '` 逐行数会得到 **454**（`-v minimal` 把同一条警告打印两遍），
+    以 MSBuild 汇总行为准。
+
 - `使用说明(必读).txt` 已被 csproj 引用但上游仓库未提交，已从本机安装目录补入工作区（**待 Task 1 提交**）
 
 ### 命令速查
@@ -60,19 +74,28 @@ Set-Location 'G:\TOOL\LiteMonitor-fork'
 | 文件 | 改动 |
 |---|---|
 | `src/Core/Settings.cs` | 新增 `MonitoredGpuCount`、`RecordedMaxGpuDynamic`、`DetectedGpuVramTotalGBByKey`。 |
-| `src/Core/SettingsHelper.cs` | `Load()` 中调用 `GpuItemSync.Ensure`；`UpdateMaxRecord` 改为按基础 Key 比对并记录每卡峰值。 |
+| `src/Core/SettingsHelper.cs` | `Load()` 中调用 `GpuItemSync.Ensure`（**必须在 `InternAllStrings()` 之后**）；`InternAllStrings` 放行带序号的显卡 Key；`UpdateMaxRecord` 改为按基础 Key 比对并记录每卡峰值。 |
+
 | `src/Core/MetricUtils.cs` | `GetType` 天然兼容（不改）；`GetAdaptivePercentage` 归一化 + 每卡峰值优先；显存容量模式按卡取总容量。 |
 | `src/Core/MetricLabelResolver.cs` | 多卡标签加显卡简称；任务栏简称用显卡简称。 |
 | `src/Core/HardwareHistoryLogger.cs` | 历史采样支持带序号的显卡 Key。 |
+| `src/Core/Actions/AppActions.cs` | `ApplyMonitorLayout` 开头调用 `GpuItemSync.Ensure`（保存设置时同步 + 夹紧，见 Task 5.5）。 |
 | `src/System/HardwareServices/HardwareRules.cs` | 新增 `GetShortGpuName`。 |
 | `src/System/HardwareServices/SensorMap.cs` | 多卡映射核心；`CachedGpus` 列表；修 GPU.Fan 串卡。 |
 | `src/System/HardwareServices/ComponentProcessor.cs` | Clock/Power 按序号取对应显卡。 |
-| `src/System/HardwareServices/HardwareValueProvider.cs` | 显存按序号取；`OnUpdateTickStarted` 感知显卡数量变化。 |
-| `src/System/HardwareMonitor.cs` | 刷新所有被监控显卡。 |
-| `src/UI/Settings/SystemHardwarPage.cs` | 新增「监控显卡数量」下拉。 |
+| `src/System/HardwareServices/HardwareValueProvider.cs` | 显存按序号取；**带序号 Fan 键走 `UpdateMaxRecord`**（见 Task 8.0）；`OnUpdateTickStarted` 感知显卡数量变化。 |
+| `src/System/HardwareMonitor.cs` | 刷新所有被监控显卡；新增 `GetMonitoredGpuCount()`（Task 12.3）与非阻塞的 `TryGetDetectedGpuCount()`（Task 5.5）。 |
+| `src/System/HardwareServices/HardwareScanner.cs` | 新增只读缓存的 `CachedGpuCount`（Task 5.5，供 UI 线程在拿不到硬件锁时兜底）。 |
+| `src/UI/UIController.cs` | **标签/短标签兜底按基础 Key 归一化**（见 Task 7.5）；运行时显卡数量被夹紧时重建布局（见 Task 12.3）。 |
+| `src/UI/HardwareTrendForm.cs` | **历史曲线展示侧支持带序号 Key**（见 Task 11.5）。 |
+| `src/UI/Settings/SystemHardwarPage.cs` | 新增「监控显卡数量」下拉（按实际检测卡数填充）。 |
+| `src/UI/Helpers/MenuMonitorHelper.cs` | `ApplyMonitorLayout` 新增 `Settings cfg` 首参后的 3 处调用点同步改签名。 |
+
 | `resources/lang/*.json`（9 个） | 新增 `Menu.GpuMonitorCount` 与 `Menu.GpuMonitorCountTip`。 |
-| `.gitignore` | 忽略 `bin/`、`obj/`。 |
-| `使用说明(必读).txt` | 提交（修复上游全新克隆编译不过的问题）。 |
+| `.gitignore` | **新建**（当前仓库没有此文件），忽略 `bin/`、`obj/`。 |
+| `LiteMonitor.csproj` | 排除 `tests\**`（SDK 默认 glob 会把测试文件编进主工程，见 Task 1 Step 3.5）。 |
+| `使用说明(必读).txt` | 提交（补上上游 csproj 的 `Content` 引用了但未入库的文件）。⚠️ **缺失会导致编译失败** —— 实测报 `error MSB3030: 无法复制文件"使用说明(必读).txt"`，所以 Task 1 必须先把它补上再编译。 |
+
 
 ---
 
@@ -81,9 +104,11 @@ Set-Location 'G:\TOOL\LiteMonitor-fork'
 **Files:**
 - Create: `tests/LiteMonitor.Tests/LiteMonitor.Tests.csproj`
 - Create: `tests/LiteMonitor.Tests/Placeholder.cs`
-- Modify: `.gitignore`
+- Create: `.gitignore`（仓库当前没有此文件，是新建而非修改）
 - Modify: `使用说明(必读).txt`（新增，从未提交状态转为已提交）
 - Modify: `LiteMonitor.sln`（加入测试工程）
+- Modify: `LiteMonitor.csproj`（**必须**: 把 `tests\**` 从主工程的编译 glob 里排除，见 Step 3.5）
+
 
 **Interfaces:**
 - Consumes: 无
@@ -101,7 +126,10 @@ Expected: 输出 `feat/multi-gpu`
 
 - [ ] **Step 2: 写 .gitignore**
 
+> 仓库当前**没有** `.gitignore`（`Test-Path` 为 False），这一步是**新建**。
+
 覆盖 `bin/`、`obj/`、`*.user`、`settings.json` 等运行期产物。写入 `G:\TOOL\LiteMonitor-fork\.gitignore`：
+
 
 ```gitignore
 # 构建产物
@@ -149,6 +177,58 @@ TrafficHistory.json.bak
 </Project>
 ```
 
+- [ ] **Step 3.5: 把 `tests/**` 从主工程的编译范围里排除（必须做）**
+
+> ⚠️ **漏了这一步, 整个计划在 Task 1 就编译不过**。
+> `LiteMonitor.csproj` 位于**仓库根目录**, 而 SDK 的默认 glob 是 `**\*.cs`,
+> 所以 `tests\LiteMonitor.Tests\*.cs` 会被**主工程一起编译**。
+> 主工程没有引用 xunit, 于是每个 `[Fact]` / `[Theory]` / `Assert` 都会报
+> `CS0246: 未能找到类型或命名空间 "Xunit"`。
+> 实测: 4 个测试文件 → **109 个错误**; 而且后续每个 Task 的「编译并跑测试」都过不去
+> （`dotnet test` 会先构建被污染的主工程）。
+>
+> `LiteMonitor.csproj` 里已经有 `LiteMonitor.Updater\**` / `LiteMonitor.Wpf\**` 的排除写法,
+> 照着加 `tests\**` 即可。
+
+在 `G:\TOOL\LiteMonitor-fork\LiteMonitor.csproj` 中，把：
+
+```xml
+<ItemGroup>
+  <Compile Remove="LiteMonitor.Updater\**" />
+  <Compile Remove="LiteMonitor.Wpf\**" />
+  <EmbeddedResource Remove="LiteMonitor.Updater\**" />
+  <EmbeddedResource Remove="LiteMonitor.Wpf\**" />
+  <None Remove="LiteMonitor.Updater\**" />
+  <None Remove="LiteMonitor.Wpf\**" />
+</ItemGroup>
+```
+
+替换为：
+
+```xml
+<ItemGroup>
+  <Compile Remove="LiteMonitor.Updater\**" />
+  <Compile Remove="LiteMonitor.Wpf\**" />
+  <Compile Remove="tests\**" />
+  <EmbeddedResource Remove="LiteMonitor.Updater\**" />
+  <EmbeddedResource Remove="LiteMonitor.Wpf\**" />
+  <EmbeddedResource Remove="tests\**" />
+  <None Remove="LiteMonitor.Updater\**" />
+  <None Remove="LiteMonitor.Wpf\**" />
+  <None Remove="tests\**" />
+</ItemGroup>
+```
+
+> `None` / `EmbeddedResource` 也要排除, 否则 `tests\**` 下的文件会被当成"内容"复制到输出目录。
+
+改完立刻验证主工程仍然是 0 错误：
+
+```powershell
+$dotnet build 'G:\TOOL\LiteMonitor-fork\LiteMonitor.csproj' -c Release -v minimal
+```
+
+Expected: **0 错误**（约 227 条既有警告）。如果这里冒出成片的 `CS0246 ... Xunit`, 说明没改对。
+
 - [ ] **Step 4: 写占位测试文件**
 
 写入 `G:\TOOL\LiteMonitor-fork\tests\LiteMonitor.Tests\Placeholder.cs`：
@@ -192,12 +272,15 @@ Expected: `通过! - 失败: 0, 已通过: 1, 已跳过: 0, 总计: 1`（中文�
 - [ ] **Step 7: 提交**
 
 ```powershell
-git add .gitignore '使用说明(必读).txt' tests/ LiteMonitor.sln
+git add .gitignore '使用说明(必读).txt' tests/ LiteMonitor.sln LiteMonitor.csproj
 git commit -m "chore: 建立多显卡改造的工程基线与测试骨架
 
 - 新增 xUnit 测试工程 tests/LiteMonitor.Tests
+- 主工程 csproj 排除 tests/**，避免测试文件被主工程一起编译
 - .gitignore 忽略构建产物与运行期数据文件
-- 补交 使用说明(必读).txt（上游 csproj 引用了它但未入库，导致全新克隆编译不过）"
+- 补交 使用说明(必读).txt（上游 csproj 的 Content 引用了它但该文件未入库；
+  缺失会导致编译失败 MSB3030，必须在编译前补上）"
+
 ```
 
 ---
@@ -214,7 +297,8 @@ git commit -m "chore: 建立多显卡改造的工程基线与测试骨架
 - Consumes: 无
 - Produces:
   - `LiteMonitor.src.Core.GpuKey`：`const string Prefix = "GPU."`、`const int MaxGpuCount = 8`、`static bool TryParse(string key, out int index, out string metric)`、`static string Build(int index, string metric)`、`static string BaseKey(string metric)`、`static string ToBaseKey(string key)`
-  - `LiteMonitor.src.Core.GpuRegistry`：`static void Set(int index, string shortName, string fullName)`、`static string GetShortName(int index)`、`static string GetFullName(int index)`、`static void Clear()`
+  - `LiteMonitor.src.Core.GpuRegistry`：`static void ReplaceAll(GpuInfo[] entries)`、`static void Set(int index, string shortName, string fullName)`、`static string GetShortName(int index)`、`static string GetFullName(int index)`、`static void Clear()`；以及 `LiteMonitor.src.Core.GpuInfo`（`ShortName` / `FullName`）
+
 
 - [ ] **Step 1: 写失败测试**
 
@@ -373,32 +457,58 @@ namespace LiteMonitor.src.Core
     /// </summary>
     public static class GpuRegistry
     {
-        private static readonly string[] _shortNames = new string[GpuKey.MaxGpuCount];
-        private static readonly string[] _fullNames = new string[GpuKey.MaxGpuCount];
+        // ★★★ 用 volatile 引用持有不可变快照 ★★★
+        // SensorMap.Rebuild 是在锁外边填边改的, 读侧 (UI 线程) 可能看到
+        // "第 0 张已更新、第 1 张还没更新"的半成品注册表。
+        // 整体替换一个数组引用后, 读侧要么看到旧的完整快照, 要么看到新的完整快照。
+        private static volatile GpuInfo[] _entries = new GpuInfo[GpuKey.MaxGpuCount];
 
-        /// <summary>登记某序号对应的显卡</summary>
+        /// <summary>整体替换注册表 (原子操作, 读侧不会看到半更新状态)</summary>
+        public static void ReplaceAll(GpuInfo[] entries)
+        {
+            var copy = new GpuInfo[GpuKey.MaxGpuCount];
+            if (entries != null)
+            {
+                int n = Math.Min(entries.Length, copy.Length);
+                for (int i = 0; i < n; i++) copy[i] = entries[i] ?? new GpuInfo();
+            }
+            _entries = copy;
+        }
+
+        /// <summary>登记某序号对应的显卡 (单项写入, 仅供调试/单点更新)</summary>
         public static void Set(int index, string shortName, string fullName)
         {
-            if (index < 0 || index >= _shortNames.Length) return;
-            _shortNames[index] = shortName ?? "";
-            _fullNames[index] = fullName ?? "";
+            if (index < 0 || index >= GpuKey.MaxGpuCount) return;
+            var copy = (GpuInfo[])_entries.Clone();
+            copy[index] = new GpuInfo { ShortName = shortName ?? "", FullName = fullName ?? "" };
+            _entries = copy;
         }
 
         /// <summary>取显卡简称 (如 "3080 Ti")，越界返回空串</summary>
         public static string GetShortName(int index)
-            => (index >= 0 && index < _shortNames.Length) ? (_shortNames[index] ?? "") : "";
+        {
+            var e = _entries;
+            return (index >= 0 && index < e.Length && e[index] != null) ? e[index].ShortName : "";
+        }
 
         /// <summary>取显卡全名 (如 "NVIDIA GeForce RTX 3080 Ti")，越界返回空串</summary>
         public static string GetFullName(int index)
-            => (index >= 0 && index < _fullNames.Length) ? (_fullNames[index] ?? "") : "";
+        {
+            var e = _entries;
+            return (index >= 0 && index < e.Length && e[index] != null) ? e[index].FullName : "";
+        }
 
         /// <summary>清空注册表 (硬件重载时调用)</summary>
-        public static void Clear()
-        {
-            Array.Clear(_shortNames, 0, _shortNames.Length);
-            Array.Clear(_fullNames, 0, _fullNames.Length);
-        }
+        public static void Clear() => ReplaceAll(null);
     }
+
+    /// <summary>一张显卡的简称 / 全名。</summary>
+    public sealed class GpuInfo
+    {
+        public string ShortName { get; set; } = "";
+        public string FullName { get; set; } = "";
+    }
+
 }
 ```
 
@@ -410,7 +520,8 @@ namespace LiteMonitor.src.Core
 $dotnet test 'G:\TOOL\LiteMonitor-fork\tests\LiteMonitor.Tests\LiteMonitor.Tests.csproj' -v minimal
 ```
 
-Expected: 全部通过（11 个测试用例）
+Expected: 全部通过（17 个测试用例：TryParse 4 + 非法 Key 8 + Build 1 + BaseKey 1 + ToBaseKey 3）
+
 
 - [ ] **Step 6: 提交**
 
@@ -451,10 +562,13 @@ namespace LiteMonitor.Tests
         [InlineData("NVIDIA GeForce RTX 3080", "3080")]
         [InlineData("AMD Radeon RX 7900 XTX", "7900 XTX")]
         [InlineData("AMD Radeon(TM) Graphics", "Graphics")]
+        [InlineData("AMD Radeon(TM) RX Vega 8", "Vega 8")]
+        [InlineData("AMD Radeon RX 6800 XT", "6800 XT")]
         [InlineData("Intel Arc B580", "B580")]
         [InlineData("Intel(R) UHD Graphics 770", "UHD Graphics 770")]
         [InlineData("Intel Arc Graphics", "Graphics")]
         public void GetShortGpuName_剥离厂商与系列前缀(string full, string expected)
+
         {
             Assert.Equal(expected, HardwareRules.GetShortGpuName(full));
         }
@@ -494,14 +608,28 @@ Expected: 编译错误 `CS0117: "HardwareRules" 不包含 "GetShortGpuName" 的�
         {
             if (string.IsNullOrWhiteSpace(name)) return "";
 
-            string n = name.Trim();
+            // 0. ★★★ 先剥离注册商标标记并归一化空格 ★★★
+            //    LHM 里 AMD 核显的原始名就是 "AMD Radeon(TM) Graphics"。
+            //    如果不先剥掉 "(TM)"，下面的前缀匹配会全部失配:
+            //    "AMD Radeon " (带空格) 匹配不上 "AMD Radeon(TM)"，
+            //    于是退化成命中 "AMD "，留下 "Radeon(TM) Graphics"。
+            string n = name
+                .Replace("(R)", " ", StringComparison.OrdinalIgnoreCase)
+                .Replace("(TM)", " ", StringComparison.OrdinalIgnoreCase)
+                .Replace("®", " ")
+                .Replace("™", " ");
+            n = string.Join(" ", n.Split(' ', StringSplitOptions.RemoveEmptyEntries));
 
             // 1. 剥离厂商前缀
             string[] vendorPrefixes =
             {
+                // 注意: 这里**不能**写 "Intel(R) " —— Step 0 已经把 "(R)" 剥成空格,
+                // "Intel(R) UHD Graphics 770" 归一化后是 "Intel UHD Graphics 770",
+                // 那个前缀永远匹配不到, 留着只是误导。
                 "NVIDIA GeForce ", "NVIDIA ", "AMD Radeon ", "AMD ",
-                "Intel(R) ", "Intel ", "Apple ", "Microsoft "
+                "Intel ", "Apple ", "Microsoft "
             };
+
             foreach (var p in vendorPrefixes)
             {
                 if (n.StartsWith(p, StringComparison.OrdinalIgnoreCase))
@@ -553,10 +681,13 @@ git commit -m "feat(gpu): 新增显卡简称提取规则
 - Modify: `src/Core/Settings.cs`（新增 `MonitoredGpuCount`，供 GpuItemSync 读取数量）
 
 **Interfaces:**
-- Consumes: `LiteMonitor.src.Core.GpuKey`（Task 2）、`LiteMonitor.src.Core.Settings`（既有）、`LiteMonitor.src.Core.MonitorItemConfig`（既有）
+- Consumes: `LiteMonitor.src.Core.GpuKey`（Task 2）、`LiteMonitor.Settings`（既有）、`LiteMonitor.MonitorItemConfig`（既有）
+
 - Produces:
   - `Settings.MonitoredGpuCount : int`（默认 1）
-  - `LiteMonitor.src.Core.GpuItemSync.Ensure(Settings cfg)`；常量 `GpuItemSync.Metrics`、`GpuItemSync.SortStride = 10`
+  - `LiteMonitor.src.Core.GpuItemSync.Ensure(Settings cfg, int availableGpuCount = GpuKey.MaxGpuCount)`；常量 `GpuItemSync.Metrics`、`GpuItemSync.SortStride = 10`
+  - `Ensure` 会把 `MonitoredGpuCount` 夹紧到 `min(MonitoredGpuCount, availableGpuCount, GpuKey.MaxGpuCount)`，并把夹紧后的值**回写**到 `cfg.MonitoredGpuCount`，让设置页能立刻看到真实生效值
+
 
 - [ ] **Step 1: 在 Settings 中新增 MonitoredGpuCount**
 
@@ -679,6 +810,70 @@ namespace LiteMonitor.Tests
             GpuItemSync.Ensure(s);
             Assert.Equal(6 * GpuKey.MaxGpuCount, s.MonitorItems.Count(x => x.Key.StartsWith("GPU.")));
         }
+
+        [Fact]
+        public void Ensure_实际卡数不足时_夹紧并回写数量()
+        {
+            // 机器上只有 2 张卡, 但配置里写了 8
+            var s = NewSettings(8);
+            GpuItemSync.Ensure(s, availableGpuCount: 2);
+
+            // 只生成 2 组, 不会出现 6 组空白监控项
+            Assert.Equal(12, s.MonitorItems.Count(x => x.Key.StartsWith("GPU.")));
+            Assert.DoesNotContain(s.MonitorItems, x => x.Key.StartsWith("GPU.2."));
+            // 数量被夹紧后回写, 让设置页显示真实生效值
+            Assert.Equal(2, s.MonitoredGpuCount);
+        }
+
+        [Fact]
+        public void Ensure_实际卡数充足时_不改动数量()
+        {
+            var s = NewSettings(2);
+            GpuItemSync.Ensure(s, availableGpuCount: 4);
+            Assert.Equal(2, s.MonitoredGpuCount);
+            Assert.Equal(12, s.MonitorItems.Count(x => x.Key.StartsWith("GPU.")));
+        }
+
+        [Fact]
+        public void Ensure_保留范围内的自定义带序号Key()
+        {
+            // 用户/插件自建的 "GPU.0.Custom" 不该被静默删掉
+            // (Task 5 Step 2.5 放行了带序号的 Key, Ensure 就不该再把它删掉)
+            var s = NewSettings(2, new MonitorItemConfig
+            {
+                Key = "GPU.0.Custom",
+                UserLabel = "我的自定义",
+                SortIndex = 999,
+                TaskbarSortIndex = 999,
+            });
+
+            GpuItemSync.Ensure(s, availableGpuCount: 2);
+
+            Assert.Contains(s.MonitorItems, x => x.Key == "GPU.0.Custom");
+            var custom = s.MonitorItems.First(x => x.Key == "GPU.0.Custom");
+            Assert.Equal("我的自定义", custom.UserLabel);
+        }
+
+        [Fact]
+        public void Ensure_丢弃超出卡数的自定义带序号Key()
+        {
+            // count=2 时 "GPU.2.Custom" 属于越界项, 不能复活 ——
+            // 否则又会出现计划要消灭的"空白监控项"。
+            var s = NewSettings(2, new MonitorItemConfig
+            {
+                Key = "GPU.2.Custom",
+                UserLabel = "越界",
+                SortIndex = 999,
+                TaskbarSortIndex = 999,
+            });
+
+            GpuItemSync.Ensure(s, availableGpuCount: 2);
+
+            Assert.DoesNotContain(s.MonitorItems, x => x.Key.StartsWith("GPU.2."));
+            // 标准项 2 组 x 6 = 12, 越界的自定义项不计入
+            Assert.Equal(12, s.MonitorItems.Count(x => x.Key.StartsWith("GPU.")));
+        }
+
     }
 }
 ```
@@ -728,17 +923,25 @@ namespace LiteMonitor.src.Core
         public const int SortStride = 10;
 
         /// <summary>
-        /// 同步显卡监控项。可重复调用, 幂等。
+        /// 同步显卡监控项。可重复调用, 在**同一个 cap** 下幂等。
         /// </summary>
-        public static void Ensure(Settings cfg)
+        public static void Ensure(Settings cfg, int availableGpuCount = GpuKey.MaxGpuCount)
         {
             if (cfg?.MonitorItems == null) return;
 
+            // ★★★ [多显卡] 上限 = 实际检测到的卡数 与 配置上限 取小 ★★★
+            // 没有这一步, 用户在 2 卡机器上选 8 会生成 6 组永远没有数据的空白监控项。
+            int cap = Math.Max(1, Math.Min(GpuKey.MaxGpuCount, availableGpuCount));
+
             int count = cfg.MonitoredGpuCount;
             if (count < 1) count = 1;
-            if (count > GpuKey.MaxGpuCount) count = GpuKey.MaxGpuCount;
+            if (count > cap) count = cap;
+
+            // 夹紧结果回写, 让设置页显示真实生效值
+            if (cfg.MonitoredGpuCount != count) cfg.MonitoredGpuCount = count;
 
             var items = cfg.MonitorItems;
+
 
             // 1. 旧版单卡项作为迁移模板
             var legacy = new Dictionary<string, MonitorItemConfig>(StringComparer.OrdinalIgnoreCase);
@@ -787,13 +990,38 @@ namespace LiteMonitor.src.Core
                     items.Add(new MonitorItemConfig
                     {
                         Key = key,
-                        SortIndex = sort + i * SortStride,
+                        // ★ 排序索引同样继承旧项, 否则用户在"监控项显示"里拖过的顺序会被重置 ★
+                        SortIndex = (tpl != null && tpl.SortIndex != 0 ? tpl.SortIndex : sort) + i * SortStride,
                         TaskbarSortIndex = taskbarSort,
                         VisibleInPanel = tpl?.VisibleInPanel ?? panel,
                         VisibleInTaskbar = tpl?.VisibleInTaskbar ?? taskbar,
+                        // 任务栏自定义名要继承 (UserLabel 是故意不继承的: 两张卡同名没意义)
+                        TaskbarLabel = tpl?.TaskbarLabel,
                         UnitPanel = tpl?.UnitPanel,
                         UnitTaskbar = tpl?.UnitTaskbar,
                     });
+
+                }
+            }
+
+            // 4.5 ★★★ 保留非标准指标 (例如用户/插件自建的 "GPU.0.Custom") ★★★
+            //     Task 5 Step 2.5 让 InternAllStrings 放行了所有带序号的显卡 Key,
+            //     如果这里把它们一起删掉, 那一步放行就白做了 (实测会静默丢失)。
+            //     ⚠️ **只保留当前监控数量范围内**的自定义项 (customIndex < count) ——
+            //     否则 count=2 时 "GPU.5.Custom" 会被复活, 又冒出计划要消灭的空白监控项,
+            //     而且会打破"MonitorItems 里不存在 GPU.{超出卡数}.*"这条不变量。 ★★★
+            //     已知限制: 越界的自定义项一旦被裁掉, **之后把数量调大也不会自动找回**
+            //     (裁掉就是真删了, 不做历史保留) —— 这是有意为之, 避免空白监控项复活。
+            //     另: 非规范大小写的 Key (如 "GPU.0.load") 会**原样保留**, 不规范成 "GPU.0.Load"。
+            var standardMetrics = new HashSet<string>(
+                Metrics.Select(m => m.metric), StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in indexed)
+            {
+                if (GpuKey.TryParse(kv.Key, out int customIndex, out string customMetric)
+                    && customIndex < count
+                    && !standardMetrics.Contains(customMetric))
+                {
+                    items.Add(kv.Value);
                 }
             }
         }
@@ -827,12 +1055,25 @@ git commit -m "feat(gpu): 新增显卡监控项同步器
 - Modify: `src/Core/Settings.cs`（在 `MonitorItems` 属性附近新增三个成员）
 - Modify: `src/Core/SettingsHelper.cs`（`Load()` 中调用 `GpuItemSync.Ensure`；`UpdateMaxRecord` 改为归一化比对）
 - Modify: `tests/LiteMonitor.Tests/GpuItemSyncTests.cs`（追加一个 `Ensure` 与 `Load` 联动的用例可选；本步至少保证既有测试仍通过）
+  - ⚠️ **会调 `SettingsHelper.Load()` 的用例必须串行化**: `SettingsHelper.FilePath` 固定指向
+    `AppContext.BaseDirectory\settings.json`, 同一个测试程序集里两个调 `Load()` 的用例会**并行写同一个文件**,
+    实测抛 `IOException: The process cannot access the file ... because it is used by another process`。
+    做法: 给这些用例所在的类加 `[Collection("cfgfile")]`, 并建一个不带 `Fact` 的
+    `public class CfgFileCollection : ICollectionFixture<object> {}` 定义该 collection。
 
 **Interfaces:**
 - Consumes: `GpuItemSync.Ensure`（Task 4）、`GpuKey.ToBaseKey`（Task 2）
 - Produces:
   - `Settings.RecordedMaxGpuDynamic : Dictionary<string, float>`
-  - `Settings.DetectedGpuVramTotalGBByKey : Dictionary<string, float>`（静态，`[JsonIgnore]`）
+  - `Settings.DetectedGpuVramTotalGBByKey : ConcurrentDictionary<string, float>`（静态，`[JsonIgnore]`）
+
+> ⚠️ `RecordedMaxGpuDynamic` 是 `Dictionary<string, float>`（非 `ConcurrentDictionary`）:
+> 它只在硬件线程 (`UpdateMaxRecord`) 里写, UI 线程只读, 所以不需要并发保护。
+> 但 `SettingsChanger.Merge` 的反射默认分支对集合类型是**按引用赋值**
+> （`SettingsChanger.cs:74-77`, 只有 `PluginInstances` / `Thresholds` 做了 JSON 深拷贝）,
+> 所以设置窗口打开期间产生的每卡峰值会在保存时**被 draft 覆盖回旧值**。
+> 这是可接受的 (峰值本来就是"历史最大值", 丢一点不影响), 但要知道这个行为。
+
 
 - [ ] **Step 1: 在 Settings 中新增字段**
 
@@ -851,8 +1092,11 @@ git commit -m "feat(gpu): 新增显卡监控项同步器
         public Dictionary<string, float> RecordedMaxGpuDynamic { get; set; } = new Dictionary<string, float>();
 
         // ★★★ [多显卡] 运行时缓存: 各显卡的显存总容量 (GB), key = "GPU" / "GPU.0" / "GPU.1" ★★★
+        // 用 ConcurrentDictionary: 硬件线程 (HardwareValueProvider.GetGpuVramPercent) 写,
+        // UI 线程 (MetricUtils.GetGpuVramTotalGB) 读 —— 普通 Dictionary 并发写会损坏内部结构。
         [JsonIgnore]
-        public static Dictionary<string, float> DetectedGpuVramTotalGBByKey { get; } = new Dictionary<string, float>();
+        public static ConcurrentDictionary<string, float> DetectedGpuVramTotalGBByKey { get; } = new ConcurrentDictionary<string, float>();
+
 ```
 
 > 注：`MonitoredGpuCount` 已在 Task 4 加入（`GpuItemSync` 依赖它），此处不要重复添加。
@@ -860,48 +1104,125 @@ git commit -m "feat(gpu): 新增显卡监控项同步器
 
 - [ ] **Step 2: 在 SettingsHelper.Load 中接入同步**
 
+> ⚠️ **插入点极其重要**: 必须放在 `s.InternAllStrings();` **之后**。
+> `InternAllStrings`（`SettingsHelper.cs:244`）会用 `GetStandardKeys()` 白名单清理"孤儿项",
+> 而该白名单来自 `InitDefaultItems()`（`SettingsHelper.cs:156`）, 里面只有旧格式的
+> `"GPU.Load"` / `"GPU.Temp"` / `"GPU.VRAM"`。
+> `"GPU.0.Load"` 这类带序号 Key 既不在白名单里、也不以 `DASH.` 开头 → **会被当场删光**。
+> 若 `Ensure` 放在它之前, 默认单卡模式下主界面**一个显卡指标都不会显示**。
+
 在 `src/Core/SettingsHelper.cs` 的 `Load()` 方法中，把这一段：
 
 ```csharp
-            else
-            {
-                // 2. Version check
-                bool isLegacyConfig = s.MonitorItems.All(x => x.TaskbarSortIndex == 0);
-
-                if (isLegacyConfig)
-                {
-                    s.RebuildAndMigrateSettings();
-                }
-                else
-                {
-                    s.CheckAndAppendMissingItems();
-                }
-            }
+            s.InternAllStrings();
 ```
 
 替换为：
 
 ```csharp
-            else
-            {
-                // 2. Version check
-                bool isLegacyConfig = s.MonitorItems.All(x => x.TaskbarSortIndex == 0);
-
-                if (isLegacyConfig)
-                {
-                    s.RebuildAndMigrateSettings();
-                }
-                else
-                {
-                    s.CheckAndAppendMissingItems();
-                }
-            }
+            s.InternAllStrings();
 
             // 3. [多显卡] 同步显卡监控项。
-            //    必须放在 CheckAndAppendMissingItems 之后 —— 那一步会把缺失的默认项
+            //    ★ 必须在 InternAllStrings 之后 ★ (见上方说明)
+            //    也必须在 CheckAndAppendMissingItems 之后 —— 那一步会把缺失的默认项
             //    (含旧的 "GPU.Load" 单卡项) 补回来, 这里再统一迁移成 "GPU.{序号}.{指标}"。
+            //    注意: 此刻硬件可能还没枚举完, 拿不到实际卡数, 这里先按上限夹紧;
+            //    真实卡数会在保存设置时 (Task 5.5) 与运行时 (Task 12.3) 再次夹紧。
             GpuItemSync.Ensure(s);
 ```
+
+- [ ] **Step 2.5: 让 InternAllStrings 保留带序号的显卡 Key**
+
+`InternAllStrings` 的白名单里没有带序号的 Key, 会把它们当成"孤儿项"删掉 ——
+用户对 `GPU.0.Temp` 之类做的自定义 (可见性 / 排序 / 用户名) 会全部丢失。
+
+在 `src/Core/SettingsHelper.cs` 的 `InternAllStrings` 方法中，把：
+
+```csharp
+                    // 2. Is it a valid Plugin item? 
+                    // [Safety] 只要是 DASH. 开头，一律保留，防止误删用户自定义的简单插件
+                    if (item.Key.StartsWith("DASH.", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue; // 保留所有 DASH.*
+                    }
+                    keysToRemove.Add(item);
+```
+
+替换为：
+
+```csharp
+                    // 2. Is it a valid Plugin item? 
+                    // [Safety] 只要是 DASH. 开头，一律保留，防止误删用户自定义的简单插件
+                    if (item.Key.StartsWith("DASH.", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue; // 保留所有 DASH.*
+                    }
+
+                    // 3. ★★★ [多显卡] 带序号的显卡 Key ("GPU.0.Temp") 一律保留 ★★★
+                    // 白名单 GetStandardKeys() 里只有旧格式的 "GPU.Temp",
+                    // 不加这一句的话, 多显卡监控项会被当成"孤儿项"全部删光,
+                    // 用户对它们做的自定义 (可见性 / 排序 / 用户名) 也会一起丢。
+                    if (GpuKey.TryParse(item.Key, out _, out _))
+                    {
+                        continue;
+                    }
+
+                    keysToRemove.Add(item);
+```
+
+- [ ] **Step 2.6: 老配置迁移分支也要找回带序号的显卡 Key**
+
+> `InternAllStrings` 是 Step 2.5 管的, 但**老配置走的是另一条路**:
+> `SettingsHelper.Load()`（:50-55）在"所有项 `TaskbarSortIndex == 0`"时会走
+> `RebuildAndMigrateSettings`（:291-330）, 那个方法会**用默认清单重建整个 `MonitorItems`**,
+> 只额外找回 `DASH.*` 项 —— 带序号的显卡 Key 在到达 `Ensure` 之前就被丢掉了
+> （实测: 老配置下 `GPU.0.Custom` 加载后不存在）。
+
+在 `src/Core/SettingsHelper.cs` 的 `RebuildAndMigrateSettings` 方法中，把：
+
+```csharp
+            // 3. [Fix] 找回插件项：追加 DASH 开头且不在标准列表中的配置
+            // 必须过滤掉 DASH.HOST/DASH.Time 等标准项，否则会重复！
+            migratedList.AddRange(settings.MonitorItems
+                .Where(x => x.Key.StartsWith("DASH.", StringComparison.OrdinalIgnoreCase) && !standardKeys.Contains(x.Key))
+                .Select(x => { 
+                    if (x.TaskbarSortIndex == 0) x.TaskbarSortIndex = x.SortIndex; 
+                    return x; 
+                }));
+```
+
+替换为：
+
+```csharp
+            // 3. [Fix] 找回插件项：追加 DASH 开头且不在标准列表中的配置
+            // 必须过滤掉 DASH.HOST/DASH.Time 等标准项，否则会重复！
+            migratedList.AddRange(settings.MonitorItems
+                .Where(x => x.Key.StartsWith("DASH.", StringComparison.OrdinalIgnoreCase) && !standardKeys.Contains(x.Key))
+                .Select(x => { 
+                    if (x.TaskbarSortIndex == 0) x.TaskbarSortIndex = x.SortIndex; 
+                    return x; 
+                }));
+
+            // 3.5 ★★★ [多显卡] 同样找回带序号的显卡 Key ("GPU.0.Custom") ★★★
+            //     这一步跑在 InternAllStrings / GpuItemSync.Ensure **之前**,
+            //     不找回的话, 老配置 (所有项 TaskbarSortIndex == 0) 走迁移分支时,
+            //     用户的自定义显卡项在到达 Ensure 之前就被丢掉了 (实测会丢)。
+            //     越界的序号 (超出 MonitoredGpuCount) 由 GpuItemSync.Ensure 的 4.5 段再过滤。
+            migratedList.AddRange(settings.MonitorItems
+                .Where(x => GpuKey.TryParse(x.Key, out _, out _) && !standardKeys.Contains(x.Key))
+                .Select(x => {
+                    if (x.TaskbarSortIndex == 0) x.TaskbarSortIndex = x.SortIndex;
+                    return x;
+                }));
+```
+
+> `GpuKey` 在 `LiteMonitor.src.Core` 命名空间下, 而 `SettingsHelper.cs` 本身在 `namespace LiteMonitor`。
+> ⚠️ C# 的名字查找只会**逐层向外**找外层命名空间, **不会**下钻到子命名空间 ——
+> 所以"是子命名空间所以能直接访问"这个说法是错的。
+> 这里能直接访问, 真正的原因是 `SettingsHelper.cs` 顶部**已经有** `using LiteMonitor.src.Core;`。
+> 用 `Select-String -Path 'G:\TOOL\LiteMonitor-fork\src\Core\SettingsHelper.cs' -Pattern '^using'` 确认一下;
+> 万一哪天这行 using 被删了, 这里就要补回来, 否则会报 `CS0246: 未能找到类型或命名空间 "GpuKey"`。
+
 
 - [ ] **Step 3: 改造 UpdateMaxRecord**
 
@@ -969,7 +1290,223 @@ UpdateMaxRecord 改为按归一化后的基础 Key 比对, 并按卡单独记录
 
 ---
 
+## Task 5.5: 保存设置时同步显卡监控项
+
+> **为什么需要这一步**: 设置窗口是 draft/live 双份模型（`SettingsForm` 持有 `_draftCfg`，保存时
+> `SettingsChanger.Merge(_cfg, _draftCfg)`）。用户在设置页把「监控显卡数量」改成 2 之后,
+> 写进 live 的只有 `MonitoredGpuCount`; `MonitorItems` 里的 `GPU.1.*` 项必须在保存路径里重新生成,
+> 否则界面上不会出现第二组显卡指标。
+>
+> 放在 `AppActions.ApplyMonitorLayout` 开头, 是因为它 (1) 在 `SettingsChanger.Merge` 之后执行,
+> (2) 在 `ui.RebuildLayout()` 之前执行, (3) 之后 `SettingsForm.cs:251` 会把 live 回写进 draft。
+
+**Files:**
+- Modify: `src/Core/Actions/AppActions.cs`
+- Modify: `src/System/HardwareMonitor.cs`
+- Modify: `src/System/HardwareServices/HardwareScanner.cs`
+- Modify: `src/UI/SettingsForm.cs`（落盘前先同步监控项，见 Step 2.5）
+
+**Interfaces:**
+- Consumes: `GpuItemSync.Ensure`（Task 4）、`HardwareMonitor.TryGetDetectedGpuCount`（本任务新增）
+- Produces: 保存设置时自动生成 `GPU.{序号}.{指标}` 监控项，并按实际卡数夹紧
+
+- [ ] **Step 1: 给 ApplyMonitorLayout 增加 Settings 参数**
+
+当前签名是 `public static void ApplyMonitorLayout(UIController? ui, MainForm form, bool rebuildMenus = true)`,
+拿不到 `Settings`。**先加参数**:
+
+```csharp
+public static void ApplyMonitorLayout(Settings cfg, UIController? ui, MainForm form, bool rebuildMenus = true)
+```
+
+然后用 `Select-String -Path 'G:\TOOL\LiteMonitor-fork\src\**\*.cs' -Pattern 'ApplyMonitorLayout'` 找出**全部**调用点并补上 `cfg` 实参。已知有 4 处:
+
+| 文件 | 行 | 改法 |
+|---|---|---|
+| `src/Core/Actions/AppActions.cs` | 40 | `ApplyMonitorLayout(cfg, ui, mainForm);` |
+| `src/UI/Helpers/MenuMonitorHelper.cs` | 86 | `AppActions.ApplyMonitorLayout(cfg, ui, form, rebuildMenus: false);` |
+| `src/UI/Helpers/MenuMonitorHelper.cs` | 119 | `AppActions.ApplyMonitorLayout(cfg, ui, form, rebuildMenus: false);` |
+| `src/UI/Helpers/MenuMonitorHelper.cs` | 271 | `AppActions.ApplyMonitorLayout(cfg, ui, form, rebuildMenus: false);` |
+
+（这 4 处的作用域里都已有 `cfg` 变量；改完务必用上面的 `Select-String` 再确认一次没有漏网的调用点。）
+
+- [ ] **Step 1.5: 新增非阻塞的显卡数量查询**
+
+> **为什么不能直接用现成的 `HardwareMonitor.ListAllGpuOptions()`**:
+> 它内部是 `lock (Instance!._lock)`, 而 `ApplyMonitorLayout` 跑在 **UI 线程**
+> (保存设置 / 右键菜单)。硬件刷新 (`ReloadComputerSafe`) 持锁可达数秒,
+> 直接调用会把界面冻住 —— 也违反本计划 Global Constraints 里
+> 「不得在 UI 线程发起阻塞式硬件调用」的约束。
+>
+> 这里改成: 最多等锁 10ms, 拿不到就读扫描器缓存, **绝不阻塞**。
+
+在 `src/System/HardwareServices/HardwareScanner.cs` 中, 紧跟 `ClearCache()` 方法之后插入：
+
+```csharp
+        /// <summary>
+        /// 只读缓存里已检测到的显卡数量, 不碰硬件、不加锁。
+        /// 供 UI 线程在拿不到硬件锁时快速拿到"上次检测到的卡数"。
+        /// </summary>
+        public static int CachedGpuCount => _cachedGpuOptions?.Count ?? 0;
+```
+
+在 `src/System/HardwareMonitor.cs` 中, 紧跟 `ListAllGpuOptions()` 方法之后插入：
+
+```csharp
+        /// <summary>
+        /// 取得"已检测到的显卡数量", **不阻塞 UI 线程**。
+        ///
+        /// 快路径: 最多等锁 10ms, 拿到就精确取一次。
+        /// 慢路径: 硬件正在刷新 (ReloadComputerSafe 持锁数秒) 时, 直接读扫描器缓存,
+        ///         绝不阻塞 —— 缓存里的卡数最多是"上一次"的, 但足够用来夹紧。
+        /// 都拿不到时返回 0, 由调用方决定"不夹紧"。
+        /// </summary>
+        public static int TryGetDetectedGpuCount()
+        {
+            var inst = Instance;
+            if (inst == null) return 0;
+
+            if (Monitor.TryEnter(inst._lock, 10))
+            {
+                try
+                {
+                    return HardwareScanner.ListAllGpuOptions(inst._computer)?.Count ?? 0;
+                }
+                catch
+                {
+                    return 0;
+                }
+                finally
+                {
+                    Monitor.Exit(inst._lock);
+                }
+            }
+
+            // 拿不到锁: 退回到扫描器缓存 (不碰硬件, 不阻塞)
+            return HardwareScanner.CachedGpuCount;
+        }
+```
+
+> `Monitor` 是 `System.Threading.Monitor`（`HardwareMonitor.cs:9` 已有 `using System.Threading;`）。
+> `inst._lock` / `inst._computer` 是 `HardwareMonitor` 的私有字段, 同一个类里访问得到。
+> `HardwareScanner` 与 `HardwareMonitor` 同在 `LiteMonitor.src.SystemServices` 命名空间。
+
+- [ ] **Step 2: 在 ApplyMonitorLayout 开头同步监控项**
+
+> ⚠️ 下面代码块里的签名**已经是 Step 1 改过之后**的样子 (`Settings cfg` 已在首位),
+> 别再拿旧签名去搜; Step 2 是在 Step 1 的基础上继续改的。
+
+把：
+
+```csharp
+        public static void ApplyMonitorLayout(Settings cfg, UIController? ui, MainForm form, bool rebuildMenus = true)
+        {
+            // ★★★ [新增] 动态检查硬件开启需求 (热切换) ★★★
+            // 如果用户开启了风扇/水泵，自动开启 USB 控制器；反之关闭
+            HardwareMonitor.Instance?.RefreshHardwareConfig();
+```
+
+替换为：
+
+```csharp
+        public static void ApplyMonitorLayout(Settings cfg, UIController? ui, MainForm form, bool rebuildMenus = true)
+        {
+            // ★★★ [多显卡] 同步显卡监控项 ★★★
+            // 1) 把 MonitoredGpuCount 落到 MonitorItems 上 (生成 GPU.{序号}.{指标})
+            // 2) 按实际检测到的显卡数夹紧 —— 避免选 8 张但机器只有 2 张时产生空白监控项
+            // 必须在本方法重建布局之前执行, 否则 UI 读到的还是旧的 MonitorItems。
+            if (cfg != null)
+            {
+                // ★ 非阻塞取实际卡数 (见 Step 1.5): 绝不 lock 硬件锁 ★
+                int detectedGpuCount = HardwareMonitor.TryGetDetectedGpuCount();
+
+                // 探测不到时 (0) 不做夹紧, 但仍然要按配置数量重新生成监控项 ——
+                // 否则用户改了「监控显卡数量」保存后不会生效。
+                int cap = detectedGpuCount > 0
+                    ? detectedGpuCount
+                    : Math.Max(1, cfg.MonitoredGpuCount);
+
+                GpuItemSync.Ensure(cfg, availableGpuCount: cap);
+            }
+
+            // ★★★ [新增] 动态检查硬件开启需求 (热切换) ★★★
+            // 如果用户开启了风扇/水泵，自动开启 USB 控制器；反之关闭
+            HardwareMonitor.Instance?.RefreshHardwareConfig();
+```
+
+> `AppActions.cs` 在 `namespace LiteMonitor.src.Core.Actions`, 而 `GpuKey`/`GpuItemSync` 在**外层**的
+> `LiteMonitor.src.Core` —— C# 的名字查找会逐层向外找外层命名空间, 所以这里**不需要**补 using。
+> `HardwareMonitor` 在 `LiteMonitor.src.SystemServices`, 该文件已有 `using LiteMonitor.src.SystemServices;`
+> （`AppActions.cs` 顶部确认一下即可）。
+
+- [ ] **Step 2.5: 在落盘前同步监控项（SettingsForm）**
+
+> **为什么需要这一步**: `SettingsForm` 的保存顺序是
+> `SettingsChanger.Merge`（:240）→ `_cfg.Save()`（:244）→ `AppActions.ApplyAllSettings`（:247）
+> → `ApplyMonitorLayout` → `GpuItemSync.Ensure`。
+> 也就是说 **Ensure 发生在 Save 之后** —— 磁盘上的 `MonitorItems` 会比内存晚一轮
+> （实测: 磁盘 6 项 / 内存 12 项），要等下次启动 `Load()` 才自愈。
+> 后果: 保存后立刻读 `settings.json` 看不到 `GPU.1.*`（Task 14 Step 5.5 的验收会误判），
+> 而且保存后立刻崩溃/断电会丢掉这次的多卡设置。
+>
+> 这里在落盘**之前**先同步一次。
+
+在 `src/UI/SettingsForm.cs` 中，把：
+
+```csharp
+            // 3. 持久化保存
+            _cfg.Save();
+```
+
+替换为：
+
+```csharp
+            // 2.5 ★★★ [多显卡] 落盘前先同步显卡监控项 ★★★
+            //     必须在 _cfg.Save() 之前 —— ApplyAllSettings 里那一次 Ensure
+            //     发生在保存之后, 磁盘上的 MonitorItems 会比内存晚一轮。
+            int detectedGpuCount = LiteMonitor.src.SystemServices.HardwareMonitor.TryGetDetectedGpuCount();
+            int gpuCap = detectedGpuCount > 0
+                ? detectedGpuCount
+                : Math.Max(1, _cfg.MonitoredGpuCount);
+            GpuItemSync.Ensure(_cfg, availableGpuCount: gpuCap);
+
+            // 3. 持久化保存
+            _cfg.Save();
+```
+
+> `GpuItemSync` 在 `LiteMonitor.src.Core`, 该文件已有 `using LiteMonitor.src.Core;` —— 无需补 using。
+> `HardwareMonitor` 在 `LiteMonitor.src.SystemServices`, 而 `SettingsForm.cs` 在 `namespace LiteMonitor.src.UI`,
+> **C# 的名字查找不会下钻到兄弟命名空间** —— 所以这里用完整限定名
+> `LiteMonitor.src.SystemServices.HardwareMonitor`（或给该文件补一行 `using LiteMonitor.src.SystemServices;`）。
+>
+> `GpuItemSync.Ensure` 在**同一个 cap** 下是幂等的（实测连调两次, 键集合完全一致、无重复项）。
+> 但这两处各自独立调用 `HardwareMonitor.TryGetDetectedGpuCount()` ——
+> 若两次之间硬件被热插拔导致 cap 变了, 第二次 Ensure（在 Save 之后）会再夹一次, 磁盘又会落后一轮。
+> 这个窗口极小（保存流程几十毫秒内完成）且下次启动自愈, 知道即可。
+
+- [ ] **Step 3: 编译并跑测试**
+
+```powershell
+$dotnet build 'G:\TOOL\LiteMonitor-fork\LiteMonitor.csproj' -c Release -v minimal
+$dotnet test 'G:\TOOL\LiteMonitor-fork\tests\LiteMonitor.Tests\LiteMonitor.Tests.csproj' -v minimal
+```
+
+Expected: 编译 0 错误，测试全通过
+
+- [ ] **Step 4: 提交**
+
+```powershell
+git add src/Core/Actions/AppActions.cs src/UI/Helpers/MenuMonitorHelper.cs src/System/HardwareMonitor.cs src/System/HardwareServices/HardwareScanner.cs src/UI/SettingsForm.cs
+git commit -m "feat(gpu): 保存设置时同步显卡监控项并按实际卡数夹紧
+
+设置页只写 MonitoredGpuCount; 这里在重建布局之前统一生成 GPU.{序号}.{指标},
+并把数量夹到实际检测到的显卡数, 避免选 8 张但只有 2 张时出现空白监控项。"
+```
+
+---
+
 ## Task 6: SensorMap 多卡映射核心（同时修 GPU.Fan 串卡）
+
 
 **Files:**
 - Modify: `src/System/HardwareServices/SensorMap.cs`
@@ -1092,6 +1629,10 @@ UpdateMaxRecord 改为按归一化后的基础 Key 比对, 并按卡单独记录
 ```csharp
             // ★★★ [多显卡] 选出被监控的显卡集合 (序号即 Key 中的序号) ★★★
             var monitoredGpus = SelectMonitoredGpus(computer, cfg);
+
+            // ★★★ [多显卡] 显卡简称的本地缓冲区, 在原子交换点整体写入 GpuRegistry ★★★
+            var gpuInfoBuffer = new GpuInfo[GpuKey.MaxGpuCount];
+
 ```
 
 - [ ] **Step 5: 改造 RegisterTo 的签名与显卡分支**
@@ -1164,7 +1705,17 @@ UpdateMaxRecord 改为按归一化后的基础 Key 比对, 并按卡单独记录
                     }
 
                     // ★★★ [多显卡] 登记显卡简称, 供 UI 打标签 ★★★
-                    GpuRegistry.Set(gpuIndex, HardwareRules.GetShortGpuName(hw.Name), hw.Name);
+                    // 先写进本地数组, 最后在原子交换点整体替换 GpuRegistry ——
+                    // 避免读侧 (UI 线程) 看到"半更新"的注册表。
+                    if (gpuIndex >= 0 && gpuIndex < gpuInfoBuffer.Length)
+                    {
+                        gpuInfoBuffer[gpuIndex] = new GpuInfo
+                        {
+                            ShortName = HardwareRules.GetShortGpuName(hw.Name),
+                            FullName = hw.Name
+                        };
+                    }
+
 
                     // ★★★ [多显卡] GPU 风扇映射 (按序号写各自的 Key) ★★★
                     // 修复: 旧代码这里是无条件赋值 newMap["GPU.Fan"] = fan,
@@ -1319,6 +1870,10 @@ UpdateMaxRecord 改为按归一化后的基础 Key 比对, 并按卡单独记录
                 CachedGpu = newGpu;
                 CachedGpus = new List<IHardware>(monitoredGpus); // ★★★ [多显卡] ★★★
                 CpuBusSpeedSensor = newBusSensor; // ★ 更新 Bus Sensor 缓存
+
+                // ★★★ [多显卡] 显卡简称注册表整体替换 (原子) ★★★
+                GpuRegistry.ReplaceAll(gpuInfoBuffer);
+
 ```
 
 - [ ] **Step 9: 编译验证**
@@ -1444,7 +1999,104 @@ git commit -m "feat(gpu): 频率与功耗按显卡序号取对应显卡的传感
 
 ---
 
+## Task 7.5: 标签兜底按基础 Key 归一化
+
+> **为什么需要这一步**: 主界面 / 横条 / 任务栏的默认标签来自
+> `UIController.BuildMetrics()` 与 `BuildColumnsCore()` 里的
+> `LanguageManager.T("Items." + Key)` 与 `LanguageManager.T("Short." + Key)`。
+> 对 `GPU.0.Load` 来说, 语言包里只有 `Items.GPU.Load`, 于是
+> `LanguageManager.GetOriginal` 回退到第一个 "." 之后的后缀, 得到字面量 **"GPU.0.Load"**。
+> `MetricLabelResolver` 那条路径 (Task 10) 只在 `GpuRegistry` 有值时才命中;
+> 启动初期或该卡不在监控集合时注册表是空的 —— **兜底路径必须自己也能显示正确文案**。
+
+**Files:**
+- Modify: `src/UI/UIController.cs`
+
+**Interfaces:**
+- Consumes: `GpuKey.ToBaseKey`（Task 2）
+- Produces: 带序号 Key 的默认标签回退到基础 Key 的语言包条目
+
+- [ ] **Step 1: 改 BuildMetrics 的默认标签**
+
+在 `src/UI/UIController.cs` 的 `BuildMetrics()` 中，把：
+
+```csharp
+                string label = LanguageManager.T(UIUtils.Intern("Items." + cfgItem.Key));
+```
+
+替换为：
+
+```csharp
+                // ★★★ [多显卡] 带序号的 Key ("GPU.0.Load") 要回退到基础 Key ("GPU.Load") ★★★
+                // 否则语言包查不到时 LanguageManager 会回退成字面量 "GPU.0.Load"。
+                string label = LanguageManager.T(UIUtils.Intern("Items." + GpuKey.ToBaseKey(cfgItem.Key)));
+```
+
+并把紧邻的：
+
+```csharp
+                string defShort = LanguageManager.T(UIUtils.Intern("Short." + cfgItem.Key));
+```
+
+替换为：
+
+```csharp
+                string defShort = LanguageManager.T(UIUtils.Intern("Short." + GpuKey.ToBaseKey(cfgItem.Key)));
+```
+
+- [ ] **Step 2: 改 BuildColumnsCore 的默认标签**
+
+在 `src/UI/UIController.cs` 的 `BuildColumnsCore()` 中，把：
+
+```csharp
+            string defLabel = LanguageManager.T(UIUtils.Intern("Items." + cfg.Key));
+```
+
+替换为：
+
+```csharp
+            string defLabel = LanguageManager.T(UIUtils.Intern("Items." + GpuKey.ToBaseKey(cfg.Key)));
+```
+
+并把：
+
+```csharp
+            string defShort = LanguageManager.T(UIUtils.Intern("Short." + cfg.Key));
+```
+
+替换为：
+
+```csharp
+            string defShort = LanguageManager.T(UIUtils.Intern("Short." + GpuKey.ToBaseKey(cfg.Key)));
+```
+
+- [ ] **Step 3: 确认 using 完整**
+
+`src/UI/UIController.cs` 顶部需要 `using LiteMonitor.src.Core;`（`GpuKey`）。该文件第 1 行已有
+`using LiteMonitor.src.Core;` —— 确认即可。
+
+- [ ] **Step 4: 编译并跑测试**
+
+```powershell
+$dotnet build 'G:\TOOL\LiteMonitor-fork\LiteMonitor.csproj' -c Release -v minimal
+$dotnet test 'G:\TOOL\LiteMonitor-fork\tests\LiteMonitor.Tests\LiteMonitor.Tests.csproj' -v minimal
+```
+
+Expected: 编译 0 错误，测试全通过
+
+- [ ] **Step 5: 提交**
+
+```powershell
+git add src/UI/UIController.cs
+git commit -m "fix(gpu): 标签兜底按基础 Key 归一化
+
+带序号的 Key 查语言包时先归一化成基础 Key, 否则会回退成字面量 GPU.0.Load。"
+```
+
+---
+
 ## Task 8: 显存按卡计算
+
 
 **Files:**
 - Modify: `src/System/HardwareServices/HardwareValueProvider.cs`
@@ -1454,9 +2106,77 @@ git commit -m "feat(gpu): 频率与功耗按显卡序号取对应显卡的传感
 - Consumes: `GpuKey.TryParse`（Task 2）、`Settings.DetectedGpuVramTotalGBByKey`（Task 5）
 - Produces:
   - `HardwareValueProvider.GetGpuVramPercent(string key) -> float?`（private）
+  - `HardwareValueProvider.ReadFanValue(string key) -> float?`（private）
   - `MetricUtils.GetGpuVramTotalGB(string key) -> double`（private static）
 
+- [ ] **Step 0: 让带序号的 Fan 键也走 UpdateMaxRecord**
+
+> `GetValue` 里风扇是**精确 case** (`case "GPU.Fan":`), 峰值记录 (`_cfg.UpdateMaxRecord`) 就在那个 case 里。
+> 带序号的 `"GPU.0.Fan"` 匹配不上, 会落到 default 分支之后的通用兜底 ——
+> **能取到值, 但不会记录峰值**。两个后果:
+> - 每卡独立峰值对风扇完全失效 (Task 9 的承诺落空);
+> - 迁移后没人再请求 `"GPU.Fan"`, 全局 `RecordedMaxGpuFan` 也停止更新, 风扇进度条会恒红。
+
+在 `src/System/HardwareServices/HardwareValueProvider.cs` 的 `GetValue` 方法中，把：
+
+```csharp
+                    // 8. 风扇/泵 (带 Max 记录)
+                    case "CPU.Fan":
+                    case "CPU.Pump":
+                    case "CASE.Fan":
+                    case "GPU.Fan":
+                        if (_manualSensorCache.TryGetValue(key, out var sFan))
+                        {
+                            result = sFan.Value;
+                        }
+                        else 
+                        {
+                            if (_manualSensorCache.TryGetValue(key, out var autoS) && autoS.Value.HasValue)
+                                result = autoS.Value.Value;
+                        }
+                        if (result.HasValue && result.Value < 10000f) 
+                            _cfg.UpdateMaxRecord(key, result.Value);
+                        break;
+```
+
+替换为：
+
+```csharp
+                    // 8. 风扇/泵 (带 Max 记录)
+                    case "CPU.Fan":
+                    case "CPU.Pump":
+                    case "CASE.Fan":
+                    case "GPU.Fan":
+                        result = ReadFanValue(key);
+                        break;
+```
+
+并在 `private float? ReadMoboTemperature(ISensor sensor)` 之前插入：
+
+```csharp
+        /// <summary>
+        /// 读取风扇/泵读数并记录峰值。
+        /// 同时支持旧格式 ("CPU.Fan" / "GPU.Fan") 与多卡格式 ("GPU.0.Fan") ——
+        /// 带序号的 Key 必须走这里, 否则不会触发 UpdateMaxRecord, 每卡峰值永远记不上。
+        /// </summary>
+        private float? ReadFanValue(string key)
+        {
+            float? result = null;
+            if (_manualSensorCache.TryGetValue(key, out var sFan))
+            {
+                result = sFan.Value;
+            }
+            if (result.HasValue && result.Value < 10000f)
+                _cfg.UpdateMaxRecord(key, result.Value);
+            return result;
+        }
+```
+
+> 注: 原 `else` 分支用同一个 key 又查了一次 `_manualSensorCache` (条件恒真), 属于无效代码,
+> 这里一并去掉, 行为不变。
+
 - [ ] **Step 1: 改造 HardwareValueProvider 的显存分支**
+
 
 在 `src/System/HardwareServices/HardwareValueProvider.cs` 的 `GetValue` 方法中，把：
 
@@ -1487,7 +2207,7 @@ git commit -m "feat(gpu): 频率与功耗按显卡序号取对应显卡的传感
                         break;
 ```
 
-- [ ] **Step 2: 在 default 分支加带序号的显存处理**
+- [ ] **Step 2: 在 default 分支加带序号的显存与风扇处理**
 
 在 `GetValue` 的 `default:` 分支中，把：
 
@@ -1510,6 +2230,13 @@ git commit -m "feat(gpu): 频率与功耗按显卡序号取对应显卡的传感
 替换为：
 
 ```csharp
+                        else if (key.EndsWith(".Fan", StringComparison.OrdinalIgnoreCase) ||
+                                 key.EndsWith(".Pump", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // ★★★ [多显卡] 带序号的 "GPU.0.Fan" 也要记录每卡峰值 ★★★
+                            // 精确 case "GPU.Fan" 接不住它, 落到这里统一处理。
+                            result = ReadFanValue(key);
+                        }
                         else if (key.Contains("Clock") || key.Contains("Power"))
                         {
                             if (useCounter && key == "CPU.Clock")
@@ -1530,6 +2257,7 @@ git commit -m "feat(gpu): 频率与功耗按显卡序号取对应显卡的传感
                         }
                         break;
 ```
+
 
 - [ ] **Step 3: 新增 GetGpuVramPercent 方法**
 
@@ -2061,7 +2789,142 @@ git commit -m "feat(gpu): 硬件历史记录支持多显卡 Key
 
 ---
 
+## Task 11.5: 历史曲线展示侧支持带序号 Key
+
+> **为什么需要这一步**: Task 11 只改了**记录侧** (`HardwareHistoryLogger.GetEnabledSupportedKeys`)。
+> 展示侧 `HardwareTrendForm.GetCurrentKeys()` 返回的是**静态旧格式数组**
+> (`HardwareHistoryLogger.TemperatureKeys` 等), 里面只有 `"GPU.Temp"` 这种旧 Key。
+> 结果: `GPU.0.Temp` / `GPU.1.Temp` 会被采样、会写进 `HardwareHistory.json`,
+> 但**监控历史窗口永远画不出这两条曲线** —— Task 14 Step 5 的验收标准必然失败。
+
+**Files:**
+- Modify: `src/UI/HardwareTrendForm.cs`
+
+**Interfaces:**
+- Consumes: `GpuKey.TryParse` / `GpuKey.BaseKey`（Task 2）
+- Produces: 历史曲线窗口按分类列出带序号的显卡 Key，并隐藏失去对应监控项的旧格式 Key
+
+- [ ] **Step 1: 改造 GetCurrentKeys**
+
+在 `src/UI/HardwareTrendForm.cs` 中，把：
+
+```csharp
+        private string[] GetCurrentKeys()
+        {
+            return _category switch
+            {
+                TrendCategory.Temperature => HardwareHistoryLogger.TemperatureKeys,
+                TrendCategory.Load => HardwareHistoryLogger.LoadKeys,
+                TrendCategory.Power => HardwareHistoryLogger.PowerKeys,
+                TrendCategory.Frequency => HardwareHistoryLogger.FrequencyKeys,
+                TrendCategory.Fps => HardwareHistoryLogger.FpsKeys,
+                _ => HardwareHistoryLogger.TemperatureKeys
+            };
+        }
+```
+
+替换为：
+
+```csharp
+        private string[] GetCurrentKeys()
+        {
+            string[] baseKeys = _category switch
+            {
+                TrendCategory.Temperature => HardwareHistoryLogger.TemperatureKeys,
+                TrendCategory.Load => HardwareHistoryLogger.LoadKeys,
+                TrendCategory.Power => HardwareHistoryLogger.PowerKeys,
+                TrendCategory.Frequency => HardwareHistoryLogger.FrequencyKeys,
+                TrendCategory.Fps => HardwareHistoryLogger.FpsKeys,
+                _ => HardwareHistoryLogger.TemperatureKeys
+            };
+
+            // ★★★ [多显卡] 补上带序号的显卡 Key ("GPU.0.Temp" / "GPU.1.Temp") ★★★
+            // 只加当前分类下、且用户确实开启了的项。
+            var indexed = new List<string>();
+            foreach (var item in _cfg.MonitorItems)
+            {
+                if (!(item.VisibleInPanel || item.VisibleInTaskbar)) continue;
+                if (!GpuKey.TryParse(item.Key, out _, out string metric)) continue;
+
+                string baseKey = GpuKey.BaseKey(metric);
+                bool inCategory = baseKeys.Any(k =>
+                    string.Equals(k, baseKey, StringComparison.OrdinalIgnoreCase));
+                if (!inCategory) continue;
+
+                if (!indexed.Contains(item.Key, StringComparer.OrdinalIgnoreCase))
+                    indexed.Add(item.Key);
+            }
+
+            // ★★★ [多显卡] 旧格式的显卡 Key ("GPU.Temp") 在迁移后已没有对应的监控项,
+            // 继续显示只会留下一条"冻结在升级前最后一个点"的旧曲线, 这里剔除。 ★★★
+            // 注意: 不要写成 .Where(i => GpuKey.TryParse(i.Key, out _, out string m)).Select(i => GpuKey.BaseKey(m))
+            // —— `m` 声明在 Where 的 lambda 里, 下一个 lambda 根本看不到它 (CS0103 编译错误)。
+            var indexedBases = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in _cfg.MonitorItems)
+            {
+                if (GpuKey.TryParse(item.Key, out _, out string metric))
+                    indexedBases.Add(GpuKey.BaseKey(metric));
+            }
+
+
+            var result = new List<string>();
+            foreach (var k in baseKeys)
+            {
+                if (k.StartsWith("GPU.", StringComparison.OrdinalIgnoreCase) &&
+                    indexedBases.Contains(k)) continue;
+                result.Add(k);
+            }
+            result.AddRange(indexed);
+
+            return result.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+```
+
+- [ ] **Step 2: 补 using**
+
+`src/UI/HardwareTrendForm.cs` 需要 `using System.Linq;`（`Any` / `Where` / `Select` / `Distinct` /
+`Contains(..., IEqualityComparer)`）与 `using LiteMonitor.src.Core;`（`GpuKey`）。
+用 `Select-String -Path 'G:\TOOL\LiteMonitor-fork\src\UI\HardwareTrendForm.cs' -Pattern '^using'` 确认后补齐。
+
+- [ ] **Step 3: 曲线标签也归一化**
+
+`GetMetricLabel(string key)` 的兜底是 `LanguageManager.T("Items." + key)`, 对 `"GPU.0.Temp"`
+会得到字面量。把它改成:
+
+```csharp
+        private string GetMetricLabel(string key)
+        {
+            var item = _cfg.MonitorItems.FirstOrDefault(x => x.Key.Equals(key, StringComparison.OrdinalIgnoreCase));
+            string label = item != null ? MetricLabelResolver.ResolveLabel(item) : "";
+            if (string.IsNullOrWhiteSpace(label)) label = LanguageManager.T("Items." + GpuKey.ToBaseKey(key));
+            return string.IsNullOrWhiteSpace(label) ? key : label;
+        }
+```
+
+> `GetUnit(string key)` 用的是 `MetricUtils.GetType(key)`, 对带序号 Key 天然正确 (走子串匹配), **不用改**。
+
+- [ ] **Step 4: 编译并跑测试**
+
+```powershell
+$dotnet build 'G:\TOOL\LiteMonitor-fork\LiteMonitor.csproj' -c Release -v minimal
+$dotnet test 'G:\TOOL\LiteMonitor-fork\tests\LiteMonitor.Tests\LiteMonitor.Tests.csproj' -v minimal
+```
+
+Expected: 编译 0 错误，测试全通过
+
+- [ ] **Step 5: 提交**
+
+```powershell
+git add src/UI/HardwareTrendForm.cs
+git commit -m "feat(gpu): 历史曲线窗口支持带序号的显卡 Key
+
+记录侧已能采样 GPU.{序号}.{指标}, 展示侧同步补齐并剔除失去对应监控项的旧格式 Key。"
+```
+
+---
+
 ## Task 12: 硬件刷新层支持多卡
+
 
 **Files:**
 - Modify: `src/System/HardwareMonitor.cs`
@@ -2084,6 +2947,7 @@ git commit -m "feat(gpu): 硬件历史记录支持多显卡 Key
             // 当前面板只有一组 GPU 指标，刷新非当前显卡只会增加启动和轮询耗时。
             return ReferenceEquals(hw, activeGpu);
         }
+
 ```
 
 替换为：
@@ -2092,6 +2956,12 @@ git commit -m "feat(gpu): 硬件历史记录支持多显卡 Key
         private bool ShouldUpdateGpuHardware(IHardware hw)
         {
             var activeGpu = _sensorMap.CachedGpu;
+
+            // ★★★ [多显卡] 映射还没建好时 (CachedGpu 与 CachedGpus 都为空),
+            // 保持旧行为: 更新所有显卡。否则热插拔触发 SensorMap.Clear() 之后
+            // 到下一次 Rebuild 之间, 显卡会完全不刷新。 ★★★
+            if (activeGpu == null && _sensorMap.CachedGpus.Count == 0) return true;
+
             if (activeGpu != null && ReferenceEquals(hw, activeGpu)) return true;
 
             // ★★★ [多显卡] 更新所有被监控的显卡 ★★★
@@ -2103,6 +2973,7 @@ git commit -m "feat(gpu): 硬件历史记录支持多显卡 Key
             return false;
         }
 ```
+
 
 - [ ] **Step 2: 在 HardwareValueProvider 感知显卡数量变化**
 
@@ -2166,7 +3037,58 @@ git commit -m "feat(gpu): 硬件历史记录支持多显卡 Key
                     _lastPrefCpuFan != _cfg.PreferredCpuFan ||
 ```
 
-- [ ] **Step 3: 编译并跑测试**
+- [ ] **Step 3: 新增实际显卡数查询 + 运行时夹紧**
+
+
+> 场景: 配置里写了「监控 8 张」, 但这台机器只有 2 张卡 (或者用户拔掉了一张)。
+> 启动时 `SettingsHelper.Load()` 拿不到实际卡数, 会按上限生成 8 组监控项,
+> 其中 6 组永远没有数据 → 主界面多出 6 组空白指标。
+> 这里在运行时用真实卡数夹紧, 并重建布局。
+
+**3.1** 在 `src/System/HardwareMonitor.cs` 中, 紧跟 `ShouldUpdateGpuHardware` 方法之后插入:
+
+```csharp
+        /// <summary>
+        /// 当前实际被监控的显卡数量 (以传感器映射为准)。
+        /// 用于把配置里的"监控显卡数量"夹到真实卡数, 避免生成空白监控项。
+        /// </summary>
+        public int GetMonitoredGpuCount()
+        {
+            // ★ 无锁读 ★
+            // CachedGpus 只会被整体替换 (Rebuild 的原子交换块 / Clear), 不会被就地修改,
+            // 所以读 .Count 是安全的。
+            // 刻意不用 lock(_lock): 这个方法会被 UI 线程 (UIController.Tick) 调用,
+            // 而 ReloadComputerSafe 持锁可达数秒, 会把界面冻住。
+            return _sensorMap.CachedGpus.Count;
+        }
+
+```
+
+**3.2** 在 `src/UI/UIController.cs` 的 `Tick()` 方法中, 把:
+
+```csharp
+                await Task.Run(() => _mon.UpdateAll());
+```
+
+替换为:
+
+```csharp
+                await Task.Run(() => _mon.UpdateAll());
+
+                // ★★★ [多显卡] 实际显卡数少于配置数时 (例如拔掉了第二张卡),
+                // 夹紧配置并重建监控项, 否则会留下一组永远没有数据的空白指标。 ★★★
+                int actualGpuCount = _mon.GetMonitoredGpuCount();
+                if (actualGpuCount > 0 && _cfg.MonitoredGpuCount > actualGpuCount)
+                {
+                    GpuItemSync.Ensure(_cfg, availableGpuCount: actualGpuCount);
+                    RebuildLayout();
+                }
+```
+
+> `UIController.cs` 顶部已有 `using LiteMonitor.src.Core;`（`GpuKey` / `GpuItemSync` 同一命名空间）—— 确认即可。
+> 注意: `Tick()` 里已有 `_busy` 防重入标志, `RebuildLayout()` 只是在 UI 线程重建布局, 不会重入。
+
+- [ ] **Step 4: 编译并跑测试**
 
 ```powershell
 $dotnet build 'G:\TOOL\LiteMonitor-fork\LiteMonitor.csproj' -c Release -v minimal
@@ -2175,14 +3097,16 @@ $dotnet test 'G:\TOOL\LiteMonitor-fork\tests\LiteMonitor.Tests\LiteMonitor.Tests
 
 Expected: 编译 0 错误，测试全通过
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 5: 提交**
 
 ```powershell
-git add src/System/HardwareMonitor.cs src/System/HardwareServices/HardwareValueProvider.cs
+git add src/System/HardwareMonitor.cs src/System/HardwareServices/HardwareValueProvider.cs src/UI/UIController.cs
 git commit -m "feat(gpu): 硬件刷新层支持多张显卡
 
-被监控的所有显卡都会参与轮询; 显卡数量变化时自动重建传感器映射。"
+被监控的所有显卡都会参与轮询; 显卡数量变化时自动重建传感器映射;
+实际卡数少于配置数时夹紧配置, 避免生成空白监控项。"
 ```
+
 
 ---
 
@@ -2196,20 +3120,144 @@ git commit -m "feat(gpu): 硬件刷新层支持多张显卡
 - Consumes: `GpuItemSync.Ensure`（Task 4）、`Settings.MonitoredGpuCount`（Task 5）
 - Produces: 设置页 → 系统与硬件 → 「监控显卡数量」下拉；语言条目 `Menu.GpuMonitorCount` / `Menu.GpuMonitorCountTip`
 
-- [ ] **Step 1: 确认配置单例链路（已核实，无需改动）**
+- [ ] **Step 1: 确认配置链路（已核实，无需改动）**
 
-配置链路已核实为共享单例，combo 的 setter 直接改 `Config` 即可全局生效：
+> ⚠️ **`SettingsPageBase.Config` 是 draft，不是 live**（这一点很容易搞反）：
 
 ```
-MainForm._cfg  = Settings.Load()          // MainForm_Transparent.cs:16 —— 单例
+MainForm._cfg  = Settings.Load()          // MainForm_Transparent.cs:16 —— live 单例
   -> UIController._cfg                     // UIController.cs:14
-    -> new SettingsForm(_cfg, _ui, ...)    // MainFormBizHelper.cs:326 —— 同一个实例
-      -> SettingsPageBase.Config
+    -> new SettingsForm(_cfg, _ui, ...)    // MainFormBizHelper.cs:326
+      -> _draftCfg = _cfg.DeepClone()      // SettingsForm.cs:56 —— JSON 深拷贝出的 draft
+        -> page.SetContext(_draftCfg, ...) // SettingsForm.cs:160 —— 传的是 draft
+          -> SettingsPageBase.Config      // SettingsBase.cs:34-37 —— 所以 Config == draft
 ```
 
-因此**不需要**任何额外的同步桥接代码。若后续重构改变了这条链路，`GpuItemSync.Ensure(Config)` 仍只在同一实例上操作，不会产生分裂。
+> `SetContext` 全仓库**只有** `SettingsForm.cs:160` 这一个调用点, 传的是 `_draftCfg`,
+> 所以页面里读写的 `Config` 一律是 draft。
+
+因此 combo 的 setter 改 `Config.MonitoredGpuCount` 改的是 **draft** ——
+这**正是**我们要的：保存时 `SettingsChanger.Merge(_cfg, _draftCfg)` 会把它同步回 live，
+不需要任何额外的同步桥接代码。
+
+> ⚠️ 正因为 `Config` 是 draft，**不要**在设置页里直接改 `Config.MonitorItems` ——
+> 那样会绕过 draft/live 机制，且「监控项显示」页 (`MonitorPage`) 读的是 draft，
+> 看不到新生成的显卡项。
+> **设置页只写 `Config.MonitoredGpuCount`**, 监控项统一由 Task 5.5 在保存路径生成
+> （Task 5.5 Step 2 在 `ApplyMonitorLayout` 里、Step 2.5 在 `SettingsForm` 落盘前各做一次）。
+>
+> ⚠️ 另外: 多卡模式 (数量 >= 2) 下 `PreferredGpu` 不再生效 ——
+> `SelectMonitoredGpus` 会直接按优先级取前 N 张。此时「首选显卡」下拉仍然可以改, 但改了没有作用。
+> 若要做得更严谨, 可以在数量 >= 2 时禁用该下拉 (`_cbGpu.Inner.Enabled = false` 并加灰化样式),
+> 属于可选增强, 不阻塞本计划。
+
+
+- [ ] **Step 1.5: 记录实际检测到的显卡数量**
+
+「监控显卡数量」的下拉上限必须按**实际检测到的卡数**给, 不能给满 8 ——
+否则 2 卡机器上选 8 会凭空多出 6 组永远没有数据的空白监控项。
+
+在 `src/UI/Settings/SystemHardwarPage.cs` 的字段区，把：
+
+```csharp
+        private LiteComboBox _cbDisk, _cbNet, _cbGpu, _cbMobo;
+        private LiteComboBox _cbFanCpu, _cbFanPump, _cbFanCase;
+```
+
+替换为：
+
+```csharp
+        private LiteComboBox _cbDisk, _cbNet, _cbGpu, _cbMobo;
+        private LiteComboBox _cbFanCpu, _cbFanPump, _cbFanCase;
+
+        // ★ 实际检测到的显卡数量, 决定「监控显卡数量」下拉的可选上限 ★
+        private int _detectedGpuCount = 0;
+
+        // ★「监控显卡数量」下拉的句柄: 构造时拿不到真实卡数, 拿到之后再收窄选项 ★
+        private LiteComboBox _cbGpuCount;
+
+        // ★ 程序化改动下拉选项时抑制回调 ★
+        //   真正会触发 SelectedIndexChanged 的是后面的 `SelectedIndex = cur - 1` 赋值;
+        //   实测 `Items.Clear()` 本身**不**触发该事件, 也不会把 cmb.Text 清空。
+        //   抑制之后, 夹紧后的值由 RefreshGpuCountOptions 显式回写, 不走事件。
+        private bool _suppressGpuCountEvent = false;
+
+```
+
+在 `PopulateAsyncData` 中 (注意方法名是 `PopulateAsyncData`, 由 `OnShow()` 调用, 不是 `LoadDataAsync`),
+找到这一行:
+
+```csharp
+            var taskGpus  = Task.Run(() => HardwareMonitor.ListAllGpuOptions());
+```
+
+紧接着它下面的 `await Task.WhenAll(taskDisks, taskNets, taskGpus, taskFans, taskMobo);`
+之后插入两行:
+
+```csharp
+            // ★ 实际检测到的显卡数量 (用于「监控显卡数量」下拉的上限) ★
+            _detectedGpuCount = taskGpus.Result?.Count ?? 0;
+
+            // ★ 真实卡数拿到了, 收窄「监控显卡数量」下拉的选项 ★
+            // (构造时只能给满 1..8, 因为此刻硬件还没枚举完)
+            RefreshGpuCountOptions();
+```
+
+再在 `SystemHardwarPage` 类里 (与 `PopulateAsyncData` 同级) 插入这个方法:
+
+```csharp
+        /// <summary>
+        /// 按实际检测到的显卡数收窄「监控显卡数量」下拉的选项。
+        /// CreateSourceCard() 是在构造函数里跑的 (InitializeUI), 那一刻硬件还没枚举完,
+        /// _detectedGpuCount 恒为 0 —— 所以必须等 PopulateAsyncData() 之后再调一次。
+        /// </summary>
+        private void RefreshGpuCountOptions()
+        {
+            if (_cbGpuCount == null) return;
+
+            // ★ 还没探测到显卡 (或探测失败) 时不要收窄选项, 更不要动用户的配置 ★
+            if (_detectedGpuCount <= 0) return;
+
+            int maxSelectable = Math.Max(1, Math.Min(GpuKey.MaxGpuCount, _detectedGpuCount));
+            int cur = Math.Max(1, Math.Min(maxSelectable, Config?.MonitoredGpuCount ?? 1));
+
+            try
+            {
+                // ★ 抑制事件回调: 下面改 **SelectedIndex** 会触发 SelectedIndexChanged,
+                //   把中间态写进 draft。夹紧后的值由下面**显式**回写, 不走事件。 ★
+                //   (实测: Items.Clear() 本身不触发该事件, 真正会触发的是 SelectedIndex 赋值)
+                _suppressGpuCountEvent = true;
+
+                _cbGpuCount.Items.Clear();
+                for (int i = 1; i <= maxSelectable; i++) _cbGpuCount.Items.Add(i.ToString());
+                _cbGpuCount.SelectedIndex = cur - 1;
+            }
+            finally
+            {
+                _suppressGpuCountEvent = false;
+            }
+
+            // ★★★ [关键] 把夹紧后的值显式写回 draft ★★★
+            //   不写回会有个隐蔽的坑: 设置页**再次打开**时, SettingsPageBase.OnShow()
+            //   会重跑 AddCombo 注册的刷新回调, 而它的逻辑是
+            //     "当前值不在 Items 里 -> SelectedIndex = 0" ——
+            //   于是超出实际卡数的值 (比如 3) 会被**静默改成 1**, 而不是我们期望的 2。
+            //   先写回夹紧值, 下次打开时当前值就在 Items 里, 不会被改成 1。
+            if (Config != null && Config.MonitoredGpuCount != cur)
+            {
+                Config.MonitoredGpuCount = cur;
+            }
+        }
+```
+
+> `LiteComboBox` 直接暴露了 `Items` / `SelectedIndex` / `Text`（`src/UI/Controls/LiteUI.cs:517-520`）,
+> 不需要绕 `Inner`。
+> 这里的收窄只是**显示层**的; 配置里超出实际卡数的值由 Task 5.5 的
+> `GpuItemSync.Ensure(cfg, availableGpuCount)` 在保存时统一夹紧。
+
 
 - [ ] **Step 2: 新增数量下拉**
+
 
 在 `src/UI/Settings/SystemHardwarPage.cs` 的 `CreateSourceCard` 方法中，把：
 
@@ -2230,17 +3278,29 @@ MainForm._cfg  = Settings.Load()          // MainForm_Transparent.cs:16 —— �
 
             // ★★★ [多显卡] 监控显卡数量下拉 ★★★
             // 1 = 只监控 1 张 (沿用旧行为), 2 及以上 = 按优先级监控前 N 张
+            // ★ 选项上限按**实际检测到的显卡数**决定, 不能给满 8 ——
+            //   否则 2 卡机器上选 8 会凭空多出 6 组永远没有数据的空白监控项。 ★
+            // ★ 但 CreateSourceCard() 是在构造函数里跑的 (InitializeUI), 那一刻硬件还没枚举完,
+            //   _detectedGpuCount 恒为 0 —— 所以这里先给满 1..8,
+            //   等 PopulateAsyncData() 拿到真实卡数后再调 RefreshGpuCountOptions() 收窄。 ★
             var gpuCountOptions = Enumerable.Range(1, GpuKey.MaxGpuCount).Select(c => c.ToString()).ToList();
-            group.AddCombo(this, "Menu.GpuMonitorCount", gpuCountOptions,
+            _cbGpuCount = (LiteComboBox)group.AddCombo(this, "Menu.GpuMonitorCount", gpuCountOptions,
                 () => (Config?.MonitoredGpuCount ?? 1).ToString(),
                 v => {
                     if (Config == null) return;
-                    Config.MonitoredGpuCount = MetricUtils.ParseInt(v);
-                    // 立即同步监控项, 让设置页保存后界面能重建出新的显卡分组
-                    GpuItemSync.Ensure(Config);
+                    // ★ 程序化刷新选项 (RefreshGpuCountOptions) 时会触发本回调, 此时忽略:
+                    //   夹紧后的值由 RefreshGpuCountOptions 显式回写, 不走事件。 ★
+                    if (_suppressGpuCountEvent) return;
+                    // ★ 只写数量, 不在这里改 MonitorItems ★
+                    // 监控项由 Task 5.5 (保存设置时) 统一生成, 避免绕过 draft/live 机制。
+                    // 上限不在这里夹紧 —— 下拉的选项本身已按实际卡数收窄, 用户选不超;
+                    // 真正的夹紧由 Task 5.5 的 GpuItemSync.Ensure(cfg, availableGpuCount) 在保存时完成。
+                    Config.MonitoredGpuCount = Math.Max(1, MetricUtils.ParseInt(v));
                 }
             );
             group.AddHint(LanguageManager.T("Menu.GpuMonitorCountTip"));
+
+
 ```
 
 - [ ] **Step 3: 补齐 using**
@@ -2390,6 +3450,20 @@ Start-Process 'G:\TOOL\LiteMonitor-multi\LiteMonitor.exe' -Verb RunAs
 
 - 任务栏：把 `GPU.0.Temp` / `GPU.1.Temp` 设为任务栏可见，确认分别显示 `3080 Ti` / `3080` 前缀，数值与主界面一致。
 - 历史曲线：等 1 分钟（采样间隔 10 秒），打开「监控历史」，确认 `GPU.0.Temp` 与 `GPU.1.Temp` 是两条独立曲线。
+  > 依赖 Task 11.5: 展示侧 `GetCurrentKeys()` 必须能列出带序号的 Key, 否则这里看不到曲线。
+
+- [ ] **Step 5.5: 验证数量夹紧（空白监控项）**
+
+把「监控显卡数量」设成一个**大于实际卡数**的值（例如本机只有 2 张卡时选 8），
+保存后确认：
+
+1. 设置页的「监控显卡数量」**自动回落到 2**（`Ensure` 把夹紧结果回写到了 `MonitoredGpuCount`）。
+2. 主界面 GPU 分组下**只有 2 组**指标，没有 6 组空白项。
+3. `settings.json` 里 `MonitoredGpuCount` 为 `2`，`MonitorItems` 里不存在 `GPU.2.*` 之类的项。
+
+> 若下拉本身就不给超过实际卡数的选项（Task 13 已按 `_detectedGpuCount` 限制），
+> 这一步可以通过直接手改 `settings.json` 再重启来验证运行时夹紧路径（Task 12.3）。
+
 
 - [ ] **Step 6: 验证网页版（可选）**
 
@@ -2450,8 +3524,18 @@ git reset --hard <commit-sha>    # 仅限未推送的本地分支
 
 ## 附录 B: 已知不做的事（YAGNI）
 
-- 不做「全部显卡」自动模式：固定 1~8 的数字下拉，配置与 UI 都能立即确定，无需运行时探测硬件。
+- 不做「全部显卡」自动模式：下拉是固定的 1~8 数字（上限会按实际检测到的卡数收窄，见 Task 13），
+  不需要额外的「自动 / 全部」选项。
 - 不做插件市场的多卡支持：插件 Key 走 `DASH.*` 命名，与 `GPU.*` 无关。
 - 不改 `resources/plugins/` 下 13 个内置插件 JSON。
 - 不引入插件远程安装能力（另一条独立计划线）。
 - 不做每张卡的独立阈值：温度/占用/功耗阈值继续全局共享，峰值按卡独立自适应即可覆盖绝大多数场景。
+
+## 附录 C: 旧 "GPU.*" 历史曲线的处理
+
+- 迁移后 `MonitorItems` 里不再有 `"GPU.Temp"` 这类旧 Key, `GetEnabledSupportedKeys` 也就不会收录它们,
+  于是升级前积累的 `GPU.Temp` 曲线会**停在升级前的最后一个点**(数据仍在 `HardwareHistory.json` 里, 没丢)。
+- Task 11.5 的 `GetCurrentKeys()` 已经把这类"没有对应监控项的旧格式 Key"从列表里剔除,
+  所以监控历史窗口**不会再显示那条僵死的旧曲线** —— 表现是旧曲线消失, 而不是卡在原地不动。
+- 旧数据本身不主动清理, 留在 `HardwareHistory.json` 里也不影响使用 (文件有 7 天保留期, 会自然滚动掉)。
+
