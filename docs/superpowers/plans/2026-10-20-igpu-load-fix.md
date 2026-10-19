@@ -321,9 +321,11 @@ namespace LiteMonitor.src.SystemServices
 >
 > 这条证据把"核显传感器懒激活"从**上游 PR 的说法**升级为**从依赖二进制直接验证的结论**：修复方案的正确性不再依赖对上游的信任。
 >
-> **注意事项（虚拟显示适配器）**：`GenericGpu` 的构造函数同样不调 `Update()`，而 `HardwareType` 枚举里没有泛型 `Gpu` 成员 —— 说明它被归入三种具体 GPU 类型之一。**这意味着被 LHM 识别为 GPU 的虚拟显示适配器也会命中预热判定**。开发机 `Win32_VideoController` 实测挂着 4 个虚拟适配器（`GameViewer Virtual Display Adapter` / `Meta Virtual Monitor` / `MuMu Virtual Display Adapter` / `Todesk Virtual Display Adapter`），它们多半没有 Load 传感器 → **每次启动 / 重载预热时**都会各触发一次 `Update()`。开销极小（虚拟适配器不读 MSR / SuperIO），但会让"独显机器零额外开销"的断言在本机**不成立**。因此：
-> - Task 1.2 里的 `Debug.WriteLine` 会打印每一次预热，**Task 5.3 应据此统计预热次数**；
-> - 若虚拟适配器导致预热次数明显偏高，可在 `NeedsWarmUp` 的判定里追加"名称含 Virtual / Basic Render 则跳过"。
+> **注意事项（虚拟显示适配器）—— 已实测更正，原担心不成立**：
+> 初稿曾推测"4 个虚拟显示适配器会被 LHM 归入 GPU 类型、从而每次启动/重载都触发一次 `Update()`"。**2026-10-20 实施时的实测推翻了这一推测**：`Computer.Open()` 后 `Computer.Hardware` 中的 GPU 类硬件**只有 2 个**（两张 NVIDIA 卡），`GameViewer` / `Meta Virtual Monitor` / `MuMu` / `Todesk` 这些虚拟显示适配器**根本没有被 LHM 枚举为 GPU 硬件**，因此 `HardwareScanner.IsGpuHardware()` 也无从命中。
+> → **"追加跳过虚拟适配器规则"这一备选项可以直接关闭**，不需要实现。实测证据见 `2026-10-20-igpu-load-fix-verification.md` §2。
+> 保留下面这条一般性说明，供将来 LHM 版本变化后参考：若某版本的 LHM 开始把虚拟适配器枚举为 GPU 且它们没有 Load 传感器，才会发生"每次启动多一次 `Update()`"，届时再考虑在 `NeedsWarmUp` 里追加名称过滤。
+
 >
 > ⚠️ **注意措辞**：预热**只在启动与重载两个时机**触发（**不进 `SensorMap.Rebuild`**），所以这里说的是"**每次启动 / 重载**"，**不是**"每次 Rebuild"。
 
@@ -740,8 +742,9 @@ Set-Location 'G:\TOOL\LiteMonitor-fork'
 
 Expected: 全部通过。
 > 测试类：原有 6 个（`GpuItemSyncTests` / `GpuKeyTests` / `GpuVramTests` / `HardwareRulesGpuNameTests` / `MetricUtilsGpuKeyTests` / `GpuGroupTests`）+ 新增 1 个 `GpuWarmupTests` = **共 7 个测试类**（另有 `CfgFileCollection` 是 `[CollectionDefinition]` 集合夹具，不是测试类）。
-> 用例数：**基线 139 个 → 改后 146 个**（新增 7 个 = 3 个 `Fact` + 1 个 `Theory`×3 + 1 个 `Fact`）。**已实测**：基线 `139/139` 通过、改后 `146/146` 通过（见「计划自验结果」第 3 行）。
-> 若你的机器基线用例数不是 139，说明仓库已前进（并发计划线仍在提交）—— 以"**基线 + 7**"为准，不要死抠绝对数。
+> 用例数：**实施时的实际基线是 221 个 → 改后 228 个**（新增 7 个 = 3 个 `Fact` + 1 个 `Theory`×3 + 1 个 `Fact`）。**已实测**：改后 `228/228` 通过。
+> （计划初稿写的基线 139 是更早的快照；仓库在此期间已并入插件市场、语言包等测试。判断标准始终是"**基线 + 7**"，不要死抠绝对数。）
+
 
 - [ ] **Step 4.3: 提交**
 
