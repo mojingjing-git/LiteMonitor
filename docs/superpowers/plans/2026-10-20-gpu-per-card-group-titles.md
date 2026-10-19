@@ -898,14 +898,30 @@ test(gpu): 补充按卡拆组的回归测试
 
 #### 6.1 构建
 
+> ⚠️ **主工作区当前无法直接构建**：用户 `chore/rebrand` 分支上的进行中改动把
+> `src/System/WebServer/WebPageContent.cs` 改坏了（1699 个语法错误），与本计划无关。
+> 因此构建/测试一律在**从提交树导出的干净副本**里跑：
+>
+> ```powershell
+> & 'C:\Program Files\PowerShell\7\pwsh.exe' -NoProfile -File `
+>   'C:\Users\wrz20\AppData\Local\Temp\lm-verify\sync-clean.ps1' <我的提交>
+> cd 'C:\Users\wrz20\AppData\Local\Temp\lm-clean'
+> & 'G:\TOOL\dotnet-sdk\dotnet.exe' build -c Release --no-incremental
+> ```
+>
+> （`sync-clean.ps1` 用 `git archive --format=zip` 导出再 `Expand-Archive`；
+> **不能用 tar** —— Windows 的 bsdtar 会用系统 ANSI 代码页解 UTF-8 文件名，
+> 把 `使用说明(必读).txt` 变成乱码名，随后 csproj 的 Content 拷贝就会 MSB3030 失败。）
+
 ```powershell
 cd G:\TOOL\LiteMonitor-fork
-& 'G:\TOOL\dotnet-sdk\dotnet.exe' build -c Release
+& 'G:\TOOL\dotnet-sdk\dotnet.exe' build -c Release --no-incremental
 ```
 
-**判定**：`0 错误`，警告数 **≤ 232**（基线）。
+**判定**：`0 错误`，警告数 **= 232**（基线，**零新增**）。
 
-> ⚠️ `-v minimal` 会把同一条警告打印两遍，逐行 grep 得 464 是虚高。基线口径：**逐行去重后 232**。
+> ⚠️ 统计口径：`--no-incremental` 强制全量重建（增量构建不打印警告，会误得 0）。
+> 逐行去重后计数（`-v minimal` 会把同一条警告打印两遍）。
 
 #### 6.2 测试
 
@@ -934,7 +950,7 @@ cd G:\TOOL\LiteMonitor-fork
 
 ## 5. 验收清单（逐条打勾）
 
-- [ ] 构建 0 错误，警告 ≤ 232（去重后）
+- [ ] 构建 0 错误，警告 **恰好 232**（去重后，零新增）
 - [ ] 测试全通过
 - [ ] 面板：每卡一个独立组框（A1）
 - [ ] 面板：组标题 = 显卡简称（A2）
@@ -965,6 +981,9 @@ cd G:\TOOL\LiteMonitor-fork
 | R9 | `GpuRegistry` 简称晚于设置页打开 → 输入框初值是 `GPU.0` | P2 | Task 3.3/3.4 的「初值基准」已消解副作用；面板标题是实时解析的，始终正确 |
 | R10 | 旧 `GroupAliases["GPU"]` 失效 | P3 | §3.8 决定不迁移，留在配置里无害；记入 §7 |
 | R11 | `CachedGroupsKey` 在 `LiteWebServer` 里不再被使用 | P3 | 它是 `public` 属性，不产生 CS0169 警告；保留以免影响其他潜在调用方 |
+| R12 | 开关写成 `const` → 编译器把旧逻辑判为死代码 → CS0162（+1 警告） | P2 | §3.7 已改为 `static readonly`；**试编译实测确认**：写 const 时 232→234，改 static readonly 后回到 232 |
+| R13 | `Dictionary.TryGetValue` 的 `out string` 在可空分析下触发 CS8600（+1 警告） | P2 | §3.5 的 `GroupTitleResolver` 用 `out string? alias`；试编译实测确认 |
+| R14 | **语言包缺失时标签退化成原始 Key**（`Items.GPU.Load` 回退成 `GPU.Load` → 去前缀后变成 `.Load`） | P3 | **既有问题，非本次引入**：`resources/lang/` 只有 `zh.json` / `zh-tw.json`，而 `MainForm_Transparent.cs:127` 在找不到系统语言包时会 fallback 到 `"en"`（`en.json` 并不存在）→ 整个 app 的标签都会退化成原始 Key。本次改动只是让退化后的 GPU 标签少了显卡名前缀。**本计划不修**，但 Task 5 已加「加载语言包后」的真实文案用例锁住正常路径 |
 
 ---
 
